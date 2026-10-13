@@ -65,9 +65,13 @@ class HromiTelegramBot:
                     try:
                         self.handle_update(update)
                     except ApiError as error:
-                        LOG.warning('Update deferred update_id=%s code=%s',
-                                    update_id, error.code)
-                        break
+                        if self._should_retry_update(error):
+                            LOG.warning('Update deferred update_id=%s code=%s',
+                                        update_id, error.code)
+                            self._closed.wait(2)
+                            break
+                        LOG.warning('Update discarded update_id=%s status=%s code=%s',
+                                    update_id, error.status, error.code)
                     except Exception as error:  # one bad update must not stop polling
                         LOG.exception('Update failed update_id=%s type=%s',
                                       update_id, type(error).__name__)
@@ -76,6 +80,11 @@ class HromiTelegramBot:
             except ApiError as error:
                 LOG.warning('Telegram polling unavailable code=%s', error.code)
                 self._closed.wait(2)
+
+    @staticmethod
+    def _should_retry_update(error: ApiError):
+        """Retry temporary failures, but consume permanent invalid updates."""
+        return error.status is None or error.status == 429 or error.status >= 500
 
     def _allowed(self, user_id: int):
         return not self.config.allowed_user_ids or user_id in self.config.allowed_user_ids

@@ -8,6 +8,7 @@ from unittest import TestCase
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from hromi_telegram_bot.bot import HromiTelegramBot
 from hromi_telegram_bot.config import BotConfig
+from hromi_telegram_bot.http import ApiError
 from hromi_telegram_bot.store import BotStore
 
 
@@ -197,3 +198,16 @@ class BotTests(TestCase):
                         'text': '/start'},
         })
         self.assertEqual(self.telegram.messages[-1]['text'], 'Доступ к этому боту закрыт.')
+
+    def test_permanent_telegram_error_does_not_block_later_updates(self):
+        stale_callback = ApiError(
+            'telegram', 400,
+            'Bad Request: query is too old and response timeout expired',
+        )
+        self.assertFalse(self.bot._should_retry_update(stale_callback))
+        self.assertTrue(self.bot._should_retry_update(
+            ApiError('telegram', 429, 'Too Many Requests'),
+        ))
+        self.assertTrue(self.bot._should_retry_update(
+            ApiError('telegram', None, 'connection_failed'),
+        ))
