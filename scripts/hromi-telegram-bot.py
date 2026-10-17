@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 
-from pathlib import Path
 import logging
 import sys
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 
 from hromi_telegram_bot import BotConfig, HromiTelegramBot  # noqa: E402
-
 
 if __name__ == '__main__':
     logging.basicConfig(

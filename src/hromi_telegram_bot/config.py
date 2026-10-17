@@ -2,10 +2,32 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import ipaddress
+import math
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
+
+
+def secure_url(value):
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in {'http', 'https'}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.fragment
+    ):
+        raise ValueError('Invalid service URL')
+    if parsed.scheme == 'http':
+        try:
+            loopback = ipaddress.ip_address(parsed.hostname).is_loopback
+        except ValueError:
+            loopback = parsed.hostname == 'localhost'
+        if not loopback:
+            raise ValueError('Remote services require HTTPS; use loopback for an SSH tunnel')
+    return parsed
 
 
 def load_dotenv(path: Path) -> None:
@@ -27,7 +49,7 @@ def _positive_float(name: str, default: float) -> float:
         value = float(os.environ.get(name, str(default)))
     except ValueError as error:
         raise ValueError(f'{name} must be a positive number') from error
-    if value <= 0:
+    if not math.isfinite(value) or value <= 0:
         raise ValueError(f'{name} must be a positive number')
     return value
 
@@ -53,6 +75,10 @@ class BotConfig:
     max_photo_bytes: int = 8 * 1024 * 1024
     monitor_workers: int = 20
     allowed_user_ids: frozenset[int] = frozenset()
+    allow_any_user: bool = False
+    allowed_group_ids: frozenset[int] = frozenset()
+    max_active_photos: int = 20
+    daily_photos_per_user: int = 10
 
     @classmethod
     def from_env(cls, root: Path) -> 'BotConfig':
@@ -64,10 +90,18 @@ class BotConfig:
             raise ValueError('TELEGRAM_BOT_TOKEN is required')
         if not api_key:
             raise ValueError('HROMI_PUBLIC_API_KEY is required')
-        if len(api_key) < 32:
+        if len(api_key) < 32 or not api_key.isascii():
             raise ValueError('HROMI_PUBLIC_API_KEY must contain at least 32 characters')
-        parsed = urlsplit(base_url)
-        if parsed.scheme not in {'http', 'https'} or not parsed.netloc or parsed.path:
+        parsed = secure_url(base_url)
+        if (
+            parsed.scheme not in {'http', 'https'}
+            or not parsed.hostname
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+            or parsed.username
+            or parsed.password
+        ):
             raise ValueError('HROMI_BASE_URL must be an HTTP(S) origin without a path')
         allowed = os.environ.get('TELEGRAM_ALLOWED_USER_IDS', '').strip()
         try:
@@ -76,9 +110,19 @@ class BotConfig:
             )
         except ValueError as error:
             raise ValueError('TELEGRAM_ALLOWED_USER_IDS must contain integer IDs') from error
-        database = Path(os.environ.get(
-            'TELEGRAM_BOT_DB', str(root / 'data' / 'telegram-bot.sqlite3')
-        )).expanduser()
+        open_access = os.environ.get('TELEGRAM_ALLOW_ANY_USER', '') == '1'
+        if not allowed_ids and not open_access:
+            raise ValueError(
+                'Configure TELEGRAM_ALLOWED_USER_IDS or explicitly set TELEGRAM_ALLOW_ANY_USER=1'
+            )
+        groups = frozenset(
+            int(value.strip())
+            for value in os.environ.get('TELEGRAM_ALLOWED_GROUP_IDS', '').split(',')
+            if value.strip()
+        )
+        database = Path(
+            os.environ.get('TELEGRAM_BOT_DB', str(root / 'data' / 'telegram-bot.sqlite3'))
+        ).expanduser()
         return cls(
             telegram_token=token,
             hromi_base_url=base_url,
@@ -89,4 +133,8 @@ class BotConfig:
             max_photo_bytes=_positive_int('TELEGRAM_MAX_PHOTO_BYTES', 8 * 1024 * 1024),
             monitor_workers=_positive_int('TELEGRAM_MONITOR_WORKERS', 20),
             allowed_user_ids=allowed_ids,
+            allow_any_user=open_access,
+            allowed_group_ids=groups,
+            max_active_photos=_positive_int('TELEGRAM_MAX_ACTIVE_PHOTOS', 20),
+            daily_photos_per_user=_positive_int('TELEGRAM_DAILY_PHOTOS_PER_USER', 10),
         )

@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+import base64
 import logging
 import mimetypes
-from pathlib import Path
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from .config import BotConfig
 from .http import ApiError, HromiClient, TelegramClient
-from .store import BotStore, TERMINAL_STATES
-
+from .store import TERMINAL_STATES, BotStore
 
 LOG = logging.getLogger('hromi.telegram')
 ALLOWED_TYPES = {'image/jpeg', 'image/png', 'image/webp'}
@@ -27,20 +27,23 @@ STATE_LABELS = {
 
 
 PROCESSING_NOTICE = 'Обычно обработка занимает 5–10 минут. При очереди может быть дольше.'
-ACTIVE_PHOTO_NOTICE = ('У вас уже есть фото в обработке. '
-                       'Дождитесь результата, затем отправьте следующее.')
+ACTIVE_PHOTO_NOTICE = (
+    'У вас уже есть фото в обработке. Дождитесь результата, затем отправьте следующее.'
+)
 
 
 class HromiTelegramBot:
     def __init__(self, config: BotConfig, telegram=None, hromi=None, store=None):
         self.config = config
-        self.telegram = telegram or TelegramClient(config.telegram_token)
+        self.telegram = telegram or TelegramClient(config.telegram_token, config.max_photo_bytes)
         self.hromi = hromi or HromiClient(
-            config.hromi_base_url, config.hromi_api_key,
+            config.hromi_base_url,
+            config.hromi_api_key,
         )
         self.store = store or BotStore(config.database_path)
         self.executor = ThreadPoolExecutor(
-            max_workers=config.monitor_workers, thread_name_prefix='hromi-job',
+            max_workers=config.monitor_workers,
+            thread_name_prefix='hromi-job',
         )
         self._monitoring = set()
         self._monitor_lock = threading.Lock()
@@ -50,15 +53,22 @@ class HromiTelegramBot:
         self._closed.set()
         self.executor.shutdown(wait=False, cancel_futures=True)
 
-    def run(self):
+    def _restore_monitors(self):
         for job in self.store.active_jobs():
             self._start_monitor(job)
+        for comparison in self.store.active_comparisons():
+            self._start_comparison(comparison)
+
+    def run(self):
+        self._restore_monitors()
         offset = self.store.offset()
         LOG.info('Telegram bot started; restored_jobs=%s', len(self.store.active_jobs()))
         while not self._closed.is_set():
             try:
+                self._restore_monitors()
                 updates = self.telegram.get_updates(
-                    offset, self.config.telegram_poll_seconds,
+                    offset,
+                    self.config.telegram_poll_seconds,
                 )
                 for update in updates:
                     update_id = int(update['update_id'])
@@ -66,15 +76,21 @@ class HromiTelegramBot:
                         self.handle_update(update)
                     except ApiError as error:
                         if self._should_retry_update(error):
-                            LOG.warning('Update deferred update_id=%s code=%s',
-                                        update_id, error.code)
+                            LOG.warning(
+                                'Update deferred update_id=%s code=%s', update_id, error.code
+                            )
                             self._closed.wait(2)
                             break
-                        LOG.warning('Update discarded update_id=%s status=%s code=%s',
-                                    update_id, error.status, error.code)
+                        LOG.warning(
+                            'Update discarded update_id=%s status=%s code=%s',
+                            update_id,
+                            error.status,
+                            error.code,
+                        )
                     except Exception as error:  # one bad update must not stop polling
-                        LOG.exception('Update failed update_id=%s type=%s',
-                                      update_id, type(error).__name__)
+                        LOG.error(
+                            'Update failed update_id=%s type=%s', update_id, type(error).__name__
+                        )
                     offset = max(offset, update_id + 1)
                     self.store.set_offset(offset)
             except ApiError as error:
@@ -87,7 +103,10 @@ class HromiTelegramBot:
         return error.status is None or error.status == 429 or error.status >= 500
 
     def _allowed(self, user_id: int):
-        return not self.config.allowed_user_ids or user_id in self.config.allowed_user_ids
+        return self.config.allow_any_user or user_id in self.config.allowed_user_ids
+
+    def _chat_allowed(self, user_id, chat_id):
+        return chat_id == user_id or chat_id in self.config.allowed_group_ids
 
     def handle_update(self, update):
         if 'callback_query' in update:
@@ -98,6 +117,8 @@ class HromiTelegramBot:
             return
         user_id = int(message['from']['id'])
         chat_id = int(message['chat']['id'])
+        if not self._chat_allowed(user_id, chat_id):
+            return
         if not self._allowed(user_id):
             self.telegram.send_message(chat_id, 'Доступ к этому боту закрыт.')
             return
@@ -105,8 +126,8 @@ class HromiTelegramBot:
         if text in {'/start', '/help'}:
             self.telegram.send_message(
                 chat_id,
-                'Отправьте фотографию, и я обработаю её выбранной моделью. '
-                'Используйте /model, чтобы изменить модель. Отправляя фото, '
+                'Отправьте фотографию, и я обработаю её всеми доступными моделями '
+                'по очереди. Каждый результат придёт с названием модели. Отправляя фото, '
                 'подтвердите, что имеете право его обрабатывать.',
             )
             self._show_models(user_id, chat_id)
@@ -116,26 +137,28 @@ class HromiTelegramBot:
             self._handle_photo(int(update['update_id']), user_id, chat_id, message)
         elif text:
             self.telegram.send_message(
-                chat_id, 'Сначала выберите модель командой /model, затем отправьте фото.',
+                chat_id,
+                'Отправьте фото для сравнения всех доступных моделей.',
             )
 
     def _models(self, user_id: int):
         models = self.hromi.models(user_id)
-        return [model for model in models if isinstance(model.get('id'), str)]
+        return [
+            model
+            for model in models
+            if isinstance(model.get('id'), str) and model.get('availability') != 'missing'
+        ]
 
     def _show_models(self, user_id: int, chat_id: int):
         models = self._models(user_id)
         if not models:
             self.telegram.send_message(chat_id, 'Сейчас нет доступных моделей.')
             return
-        selected = self.store.selected_model(user_id)
-        rows = [[{
-            'text': ('✓ ' if model['id'] == selected else '') + model['label'],
-            'callback_data': 'model:' + model['id'],
-        }] for model in models]
         self.telegram.send_message(
-            chat_id, 'Выберите модель, затем отправьте фотографию:',
-            {'inline_keyboard': rows},
+            chat_id,
+            'Обработаю фото всеми доступными моделями по очереди:\n'
+            + '\n'.join(f'• {model["label"]}' for model in models)
+            + '\nОтправьте фотографию для сравнения.',
         )
 
     def _handle_callback(self, callback):
@@ -143,6 +166,9 @@ class HromiTelegramBot:
         callback_id = callback['id']
         message = callback.get('message') or {}
         chat_id = int((message.get('chat') or {}).get('id', user_id))
+        if not self._chat_allowed(user_id, chat_id):
+            self.telegram.answer_callback(callback_id, 'Используйте личный чат с ботом')
+            return
         if not self._allowed(user_id):
             self.telegram.answer_callback(callback_id, 'Доступ закрыт')
             return
@@ -155,17 +181,18 @@ class HromiTelegramBot:
         if model_id not in models:
             self.telegram.answer_callback(callback_id, 'Модель больше недоступна')
             return
-        self.store.set_model(user_id, model_id)
-        self.telegram.answer_callback(callback_id, 'Модель выбрана')
-        self.telegram.send_message(
-            chat_id, f'Выбрано: {models[model_id]["label"]}. Теперь отправьте фото.',
-        )
+        self.telegram.answer_callback(callback_id, 'Включено сравнение всех моделей')
+        self._show_models(user_id, chat_id)
 
     def _photo_reference(self, user_id: int, message):
         if message.get('photo'):
             photo = max(message['photo'], key=lambda item: item.get('file_size', 0))
-            return photo['file_id'], f'telegram-{user_id}-{message["message_id"]}.jpg', \
-                'image/jpeg', photo.get('file_size')
+            return (
+                photo['file_id'],
+                f'telegram-{user_id}-{message["message_id"]}.jpg',
+                'image/jpeg',
+                photo.get('file_size'),
+            )
         document = message.get('document') or {}
         content_type = document.get('mime_type')
         if content_type not in ALLOWED_TYPES:
@@ -174,6 +201,10 @@ class HromiTelegramBot:
         return document['file_id'], filename, content_type, document.get('file_size')
 
     def _handle_photo(self, update_id: int, user_id: int, chat_id: int, message):
+        comparison = self.store.comparison(update_id)
+        if comparison:
+            self._start_comparison(comparison)
+            return
         existing = self.store.job_for_update(update_id)
         if existing:
             self._start_monitor(existing)
@@ -181,9 +212,17 @@ class HromiTelegramBot:
         if self.store.has_active_job(user_id):
             self.telegram.send_message(chat_id, ACTIVE_PHOTO_NOTICE)
             return
+        if not self.store.admit_photo(
+            update_id, user_id, self.config.max_active_photos, self.config.daily_photos_per_user
+        ):
+            self.telegram.send_message(
+                chat_id, 'Лимит фотографий или очередь исчерпаны. Попробуйте позже.'
+            )
+            return
         try:
             file_id, filename, declared_type, declared_size = self._photo_reference(
-                user_id, message,
+                user_id,
+                message,
             )
             if declared_size and declared_size > self.config.max_photo_bytes:
                 raise ValueError('too_large')
@@ -197,8 +236,7 @@ class HromiTelegramBot:
             if content_type not in ALLOWED_TYPES:
                 raise ValueError('unsupported_type')
         except ValueError as error:
-            text = ('Файл больше 8 МБ.' if str(error) == 'too_large'
-                    else 'Нужен JPEG, PNG или WebP.')
+            text = 'Файл больше 8 МБ.' if str(error) == 'too_large' else 'Нужен JPEG, PNG или WebP.'
             self.telegram.send_message(chat_id, text)
             return
 
@@ -206,36 +244,148 @@ class HromiTelegramBot:
         if not models:
             self.telegram.send_message(chat_id, 'Сейчас нет доступных моделей.')
             return
-        allowed = {model['id'] for model in models}
-        selected = self.store.selected_model(user_id)
-        if selected not in allowed:
-            selected = models[0]['id']
-            self.store.set_model(user_id, selected)
+        comparison = self.store.add_comparison(
+            update_id,
+            user_id,
+            chat_id,
+            {
+                'filename': filename,
+                'content_type': content_type,
+                'image': base64.b64encode(contents).decode('ascii'),
+            },
+            models,
+        )
         try:
-            job = self.hromi.create_job(
-                user_id, update_id, filename, content_type, contents, selected,
+            self.telegram.send_message(
+                chat_id,
+                f'Фото принято. Моделей для сравнения: {len(models)}. '
+                'Результаты будут приходить по очереди.\n'
+                'Обычно каждая обработка занимает 5–10 минут; при очереди — дольше.',
             )
-        except ApiError as error:
-            if error.code == 'principal_active_limit':
-                self.telegram.send_message(chat_id, ACTIVE_PHOTO_NOTICE)
-                return
-            raise
-        stored = self.store.add_job(update_id, user_id, chat_id, job['id'], None)
-        queue_position = job.get('queue_position')
-        suffix = f' Позиция: {queue_position}.' if queue_position else ''
-        try:
-            progress = self.telegram.send_message(
-                chat_id, 'Фото принято и поставлено в очередь.' + suffix + '\n' + PROCESSING_NOTICE,
-            )
-            self.store.set_progress_message(job['id'], progress.get('message_id'))
-            stored['progress_message_id'] = progress.get('message_id')
         finally:
-            self._start_monitor(stored)
+            self._start_comparison(comparison)
+
+    def _start_comparison(self, comparison):
+        key = ('comparison', comparison['update_id'])
+        with self._monitor_lock:
+            if comparison['finished'] or key in self._monitoring:
+                return
+            if len(self._monitoring) >= self.config.monitor_workers:
+                return  # Durable work is picked up by the next polling iteration.
+            self._monitoring.add(key)
+        self.executor.submit(self._compare, comparison['update_id'])
+
+    def _compare(self, update_id):
+        key = ('comparison', update_id)
+        failures = 0
+        try:
+            while not self._closed.is_set():
+                try:
+                    if self._comparison_step(update_id):
+                        return
+                    failures = 0
+                except ApiError as error:
+                    if not self._should_retry_update(error):
+                        LOG.error(
+                            'Comparison stopped update_id=%s service=%s status=%s code=%s',
+                            update_id,
+                            error.service,
+                            error.status,
+                            error.code,
+                        )
+                        self.store.finish_comparison(update_id)
+                        return
+                    failures += 1
+                    LOG.warning(
+                        'Comparison retry update_id=%s service=%s status=%s',
+                        update_id,
+                        error.service,
+                        error.status,
+                    )
+                    self._closed.wait(min(30, 2 ** min(failures, 5)))
+        except Exception:
+            LOG.error('Comparison interrupted update_id=%s; polling will restore it', update_id)
+        finally:
+            with self._monitor_lock:
+                self._monitoring.discard(key)
+
+    def _comparison_step(self, update_id):
+        comparison = self.store.comparison(update_id)
+        if comparison['finished']:
+            return True
+        index = comparison['next_index']
+        models = comparison['models']
+        if index >= len(models):
+            # Release the user before sending a nonessential completion notice.
+            counts = self.store.comparison_counts(update_id)
+            delivered = counts.get('DELIVERED', 0)
+            self.store.finish_comparison(update_id)
+            self.telegram.send_message(
+                comparison['chat_id'],
+                f'Сравнение завершено. Результатов: {delivered} из {len(models)}. '
+                'Можно отправить следующее фото.',
+            )
+            return True
+        model = models[index]
+        label = f'{index + 1}/{len(models)} · {model["label"]} · {model["id"]}'
+        job_id = comparison['current_job_id']
+        if job_id is None:
+            payload = comparison['payload']
+            try:
+                current = self.hromi.create_job(
+                    comparison['user_id'],
+                    f'{update_id}-model-{model["id"]}',
+                    payload['filename'],
+                    payload['content_type'],
+                    base64.b64decode(payload['image']),
+                    model['id'],
+                )
+            except ApiError as error:
+                if self._should_retry_update(error):
+                    raise
+                self.telegram.send_message(
+                    comparison['chat_id'],
+                    label + ': не удалось поставить в очередь. ' + 'Код: ' + error.code,
+                )
+                if error.status in {401, 403}:
+                    self.store.finish_comparison(update_id)
+                    return True
+                self.store.advance_comparison(update_id)
+                return False
+            job_id = current['id']
+            self.store.set_comparison_job(update_id, job_id)
+        # Migrate an in-flight comparison created by older bot versions lazily.
+        self.store.set_comparison_job(update_id, job_id)
+        step = self.store.comparison_step(update_id, index)
+        if step['state'] in TERMINAL_STATES:
+            self.store.advance_comparison(update_id)
+            return False
+        if not step['progress_message_id']:
+            progress = self.telegram.send_message(
+                comparison['chat_id'],
+                label + '\n' + PROCESSING_NOTICE,
+            )
+            step['progress_message_id'] = progress.get('message_id')
+            self.store.set_progress_message(job_id, step['progress_message_id'])
+        state = self._monitor(
+            {
+                **step,
+                'user_id': comparison['user_id'],
+                'chat_id': comparison['chat_id'],
+                'model_label': label,
+            }
+        )
+        if state is None:
+            return True
+        self.store.advance_comparison(update_id)
+        return False
 
     def _start_monitor(self, job):
         job_id = job['hromi_job_id']
         with self._monitor_lock:
             if job_id in self._monitoring or job['state'] in TERMINAL_STATES:
+                return
+            if len(self._monitoring) >= self.config.monitor_workers:
                 return
             self._monitoring.add(job_id)
         self.executor.submit(self._monitor, job)
@@ -244,12 +394,18 @@ class HromiTelegramBot:
         text = STATE_LABELS.get(current['state'], current['state'])
         position = current.get('queue_position')
         text += f'. Позиция: {position}.' if position else '.'
-        if current['state'] in STATE_LABELS and current['state'] not in {'SUCCEEDED', 'FAILED', 'UNKNOWN'}:
+        if current['state'] in STATE_LABELS and current['state'] not in {
+            'SUCCEEDED',
+            'FAILED',
+            'UNKNOWN',
+        }:
             text += '\n' + PROCESSING_NOTICE
         return text
 
-    def _update_progress(self, job, current):
+    def _update_progress(self, job, current, persist=True):
         text = self._status_text(current)
+        if job.get('model_label'):
+            text = job['model_label'] + '\n' + text
         if text == job.get('last_status_text'):
             return
         message_id = job.get('progress_message_id')
@@ -258,10 +414,12 @@ class HromiTelegramBot:
                 self.telegram.edit_message(job['chat_id'], message_id, text)
             except ApiError as error:
                 if 'message is not modified' not in error.code.lower():
-                    LOG.warning('Progress update failed job_id=%s code=%s',
-                                job['hromi_job_id'], error.code)
+                    LOG.warning(
+                        'Progress update failed job_id=%s code=%s', job['hromi_job_id'], error.code
+                    )
         job['last_status_text'] = text
-        self.store.update_job(job['hromi_job_id'], current['state'], text)
+        if persist:
+            self.store.update_job(job['hromi_job_id'], current['state'], text)
 
     def _monitor(self, job):
         job_id = job['hromi_job_id']
@@ -272,6 +430,15 @@ class HromiTelegramBot:
                     current = self.hromi.job(job['user_id'], job_id)
                     failures = 0
                 except ApiError as error:
+                    if not self._should_retry_update(error):
+                        self.store.update_job(job_id, 'FAILED', error.code)
+                        self.telegram.send_message(
+                            job['chat_id'],
+                            'Задание недоступно. Код: ' + error.code,
+                        )
+                        if error.status in {401, 403} and job.get('model_label'):
+                            raise
+                        return 'FAILED'
                     failures += 1
                     LOG.warning('Job status unavailable job_id=%s code=%s', job_id, error.code)
                     self._closed.wait(min(30, 2 ** min(failures, 5)))
@@ -279,41 +446,66 @@ class HromiTelegramBot:
                 state = current.get('state')
                 if state == 'SUCCEEDED':
                     try:
-                        self.telegram.send_chat_action(job['chat_id'], 'upload_photo')
+                        try:
+                            self.telegram.send_chat_action(job['chat_id'], 'upload_photo')
+                        except ApiError:
+                            pass  # Typing/upload indicators must not block result delivery.
                         contents, content_type, _ = self.hromi.result(
-                            job['user_id'], job_id,
+                            job['user_id'],
+                            job_id,
                         )
-                        extension = {'image/jpeg': 'jpg', 'image/png': 'png',
-                                     'image/webp': 'webp'}.get(content_type, 'png')
-                        self.telegram.send_photo(
-                            job['chat_id'], contents, f'hromi-result.{extension}',
-                            content_type, self._status_text(current),
+                        extension = {
+                            'image/jpeg': 'jpg',
+                            'image/png': 'png',
+                            'image/webp': 'webp',
+                        }.get(content_type, 'png')
+                        delivered = self.telegram.send_photo(
+                            job['chat_id'],
+                            contents,
+                            f'hromi-result.{extension}',
+                            content_type,
+                            (
+                                job.get('model_label', '') + '\n' + self._status_text(current)
+                            ).strip(),
                         )
                     except ApiError as error:
+                        if not self._should_retry_update(error):
+                            self.store.update_job(job_id, 'FAILED', error.code)
+                            if error.status in {401, 403} and job.get('model_label'):
+                                raise
+                            return 'FAILED'
                         failures += 1
-                        LOG.warning('Result delivery unavailable job_id=%s code=%s',
-                                    job_id, error.code)
+                        LOG.warning(
+                            'Result delivery unavailable job_id=%s code=%s', job_id, error.code
+                        )
                         self._closed.wait(min(30, 2 ** min(failures, 5)))
                         continue
-                    self._update_progress(job, current)
-                    self.store.update_job(job_id, 'DELIVERED', self._status_text(current))
-                    return
+                    self.store.mark_delivered(job_id, (delivered or {}).get('message_id'))
+                    self._update_progress(job, current, persist=False)
+                    return 'DELIVERED'
                 if state in {'FAILED', 'UNKNOWN'}:
                     self._update_progress(job, current)
                     self.store.update_job(job_id, state, state)
                     self.telegram.send_message(
-                        job['chat_id'], 'Не удалось обработать фотографию. Код: ' + state,
+                        job['chat_id'],
+                        (
+                            job.get('model_label', '')
+                            + '\n'
+                            + 'Не удалось обработать фотографию. Код: '
+                            + (current.get('error') or state)
+                        ).strip(),
                     )
-                    return
+                    return state
                 self._update_progress(job, current)
                 self._closed.wait(self.config.poll_interval_seconds)
+        except ApiError:
+            raise
         except Exception as error:
-            LOG.exception('Job monitor stopped job_id=%s type=%s',
-                          job_id, type(error).__name__)
+            LOG.error('Job monitor stopped job_id=%s type=%s', job_id, type(error).__name__)
             try:
                 self.telegram.send_message(
-                    job['chat_id'], 'Связь временно потеряна. Задание сохранено; '
-                    'бот продолжит после перезапуска.',
+                    job['chat_id'],
+                    'Связь временно потеряна. Задание сохранено; бот продолжит после перезапуска.',
                 )
             except Exception:
                 pass

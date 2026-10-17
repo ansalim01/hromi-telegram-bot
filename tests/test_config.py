@@ -1,10 +1,9 @@
 import os
-from pathlib import Path
 import sys
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
-
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from hromi_telegram_bot.config import BotConfig

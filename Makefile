@@ -1,7 +1,8 @@
 .PHONY: run test
+PYTHON ?= $(if $(wildcard ../.venv/bin/python),$(abspath ../.venv/bin/python),python3)
 
 run:
-	python3 scripts/hromi-telegram-bot.py
+	$(PYTHON) scripts/hromi-telegram-bot.py
 
 test:
-	python3 -m unittest discover -s tests -v
+	$(PYTHON) -m unittest discover -s tests -v
