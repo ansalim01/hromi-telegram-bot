@@ -20,7 +20,7 @@ hromi_telegram_bot = []
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-extend-exclude = ["gpu-server/data", "gpu-server/custom_nodes"]
+extend-exclude = ["data", "build", "dist", ".venv"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I", "B"]
