@@ -1,23 +1,12 @@
 #!/usr/bin/env python3
-
-import logging
+import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
-
-from hromi_telegram_bot import BotConfig, HromiTelegramBot  # noqa: E402
+os.environ.setdefault('HROMI_BOT_CONFIG_DIR', str(ROOT))
+from hromi_telegram_bot.cli import main
 
 if __name__ == '__main__':
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s %(levelname)s %(name)s %(message)s',
-    )
-    bot = HromiTelegramBot(BotConfig.from_env(ROOT))
-    try:
-        bot.run()
-    except KeyboardInterrupt:
-        logging.info('Hromi Telegram bot stopped by user')
-    finally:
-        bot.close()
+    main()
