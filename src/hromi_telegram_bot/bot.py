@@ -14,9 +14,9 @@ from .http import ApiError, HromiClient, TelegramClient
 from .store import TERMINAL_STATES, BotStore
 
 LOG = logging.getLogger('hromi.telegram')
-COMPARISON_MODELS = ('flux-fill', 'qwen-image-2.1')
+COMPARISON_MODELS = ('sd15-inpaint', 'flux-fill', 'qwen-image-2.1')
 MODELS_UNAVAILABLE = (
-    'Сравнение FLUX и Qwen пока недоступно: модели ещё не готовы. Попробуйте позже.'
+    'Сравнение SD 1.5, FLUX и Qwen пока недоступно: модели ещё не готовы. Попробуйте позже.'
 )
 ALLOWED_TYPES = {'image/jpeg', 'image/png', 'image/webp'}
 STATE_LABELS = {
@@ -130,7 +130,7 @@ class HromiTelegramBot:
         if text in {'/start', '/help'}:
             self.telegram.send_message(
                 chat_id,
-                'Отправьте фотографию, и я обработаю её моделями FLUX и Qwen '
+                'Отправьте фотографию, и я обработаю её моделями SD 1.5, FLUX и Qwen '
                 'по очереди. Каждый результат придёт с названием модели. Отправляя фото, '
                 'подтвердите, что имеете право его обрабатывать.',
             )
@@ -142,7 +142,7 @@ class HromiTelegramBot:
         elif text:
             self.telegram.send_message(
                 chat_id,
-                'Отправьте фото для сравнения FLUX и Qwen.',
+                'Отправьте фото для сравнения SD 1.5, FLUX и Qwen.',
             )
 
     def _models(self, user_id: int):
@@ -162,7 +162,7 @@ class HromiTelegramBot:
             return
         self.telegram.send_message(
             chat_id,
-            'Обработаю фото моделями FLUX и Qwen по очереди:\n'
+            'Обработаю фото моделями SD 1.5, FLUX и Qwen по очереди:\n'
             + '\n'.join(f'• {model["label"]}' for model in models)
             + '\nОтправьте фотографию для сравнения.',
         )

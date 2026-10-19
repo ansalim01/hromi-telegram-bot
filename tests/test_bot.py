@@ -11,6 +11,12 @@ from hromi_telegram_bot.http import ApiError
 from hromi_telegram_bot.store import BotStore
 
 MODELS = [
+    {
+        'id': 'sd15-inpaint',
+        'label': 'SD 1.5 Inpaint',
+        'description': 'test',
+        'availability': 'ready',
+    },
     {'id': 'flux-fill', 'label': 'FLUX.1 Fill', 'description': 'test', 'availability': 'ready'},
     {
         'id': 'qwen-image-2.1',
@@ -116,6 +122,7 @@ class BotTests(TestCase):
             }
         )
         text = self.telegram.messages[-1]['text']
+        self.assertIn('SD 1.5 Inpaint', text)
         self.assertIn('FLUX.1 Fill', text)
         self.assertIn('Qwen-Image 2.1', text)
         self.assertIsNone(self.telegram.messages[-1]['reply_markup'])
@@ -126,9 +133,9 @@ class BotTests(TestCase):
             'models',
             return_value=[
                 {'id': 'passthrough', 'availability': 'ready'},
-                MODELS[1],
-                {'id': 'sd15-inpaint', 'availability': 'ready'},
+                MODELS[2],
                 MODELS[0],
+                MODELS[1],
             ],
         ):
             self.assertEqual(self.bot._models(7), MODELS)
@@ -142,9 +149,9 @@ class BotTests(TestCase):
                     'models',
                     return_value=[
                         MODELS[0],
-                        {**MODELS[1], 'availability': availability},
+                        MODELS[1],
+                        {**MODELS[2], 'availability': availability},
                         {'id': 'passthrough', 'availability': 'ready'},
-                        {'id': 'sd15-inpaint', 'availability': 'ready'},
                     ],
                 ),
             ):
@@ -186,9 +193,12 @@ class BotTests(TestCase):
         self.bot.handle_update(self.photo_update())
         self.assertTrue(self.store.has_active_job(7))
         self.bot._compare(42)
-        self.assertEqual([job[-1] for job in self.hromi.created], ['flux-fill', 'qwen-image-2.1'])
+        self.assertEqual(
+            [job[-1] for job in self.hromi.created],
+            ['sd15-inpaint', 'flux-fill', 'qwen-image-2.1'],
+        )
         self.assertNotEqual(self.hromi.created[0][1], self.hromi.created[1][1])
-        self.assertEqual(len(self.telegram.photos), 2)
+        self.assertEqual(len(self.telegram.photos), 3)
         for photo, model in zip(self.telegram.photos, MODELS, strict=False):
             self.assertIn(model['label'], photo[-1])
         self.assertFalse(self.store.has_active_job(7))
@@ -199,9 +209,10 @@ class BotTests(TestCase):
         self.hromi.states = [{'state': 'FAILED', 'error': 'https://private.example/fixture-secret'}]
         self.bot.handle_update(self.photo_update())
         self.bot._compare(42)
-        self.assertEqual(len(self.hromi.created), 2)
-        self.assertEqual(len(self.telegram.photos), 1)
-        self.assertIn('Qwen-Image 2.1', self.telegram.photos[0][-1])
+        self.assertEqual(len(self.hromi.created), 3)
+        self.assertEqual(len(self.telegram.photos), 2)
+        self.assertIn('FLUX.1 Fill', self.telegram.photos[0][-1])
+        self.assertIn('Qwen-Image 2.1', self.telegram.photos[1][-1])
         self.assertTrue(self.store.comparison(42)['finished'])
         self.assertTrue(
             all('fixture-secret' not in message['text'] for message in self.telegram.messages)
@@ -214,8 +225,8 @@ class BotTests(TestCase):
         self.bot.store = BotStore(self.config.database_path)
         self.assertEqual(len(self.bot.store.active_comparisons()), 1)
         self.bot._compare(42)
-        self.assertEqual([job[-1] for job in self.hromi.created], ['qwen-image-2.1'])
-        self.assertEqual(len(self.telegram.photos), 2)
+        self.assertEqual([job[-1] for job in self.hromi.created], ['flux-fill', 'qwen-image-2.1'])
+        self.assertEqual(len(self.telegram.photos), 3)
 
     def test_second_photo_blocked_for_entire_comparison(self):
         self.bot._start_comparison = lambda comparison: None
@@ -334,7 +345,7 @@ class BotTests(TestCase):
         self.telegram.send_message = send
         with patch.object(self.bot._closed, 'wait', return_value=False):
             self.bot._compare(42)
-        self.assertEqual(len(self.telegram.photos), 2)
+        self.assertEqual(len(self.telegram.photos), 3)
         self.assertFalse(self.store.has_active_job(7))
         self.assertEqual(self.store.comparison_step(42, 0)['state'], 'DELIVERED')
 
@@ -353,7 +364,7 @@ class BotTests(TestCase):
 
         self.hromi.job = job
         self.bot._compare(42)
-        self.assertEqual(len(self.telegram.photos), 1)
+        self.assertEqual(len(self.telegram.photos), 2)
         self.assertTrue(self.store.comparison(42)['finished'])
 
     def test_blocked_telegram_chat_finishes_comparison(self):
@@ -373,5 +384,5 @@ class BotTests(TestCase):
         self.assertEqual(len(self.telegram.photos), 1)
         self.bot.store = BotStore(self.config.database_path)
         self.bot._compare(42)
-        self.assertEqual(len(self.telegram.photos), 2)
+        self.assertEqual(len(self.telegram.photos), 3)
         self.assertFalse(self.bot.store.has_active_job(7))
