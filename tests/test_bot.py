@@ -11,8 +11,13 @@ from hromi_telegram_bot.http import ApiError
 from hromi_telegram_bot.store import BotStore
 
 MODELS = [
-    {'id': 'flux-fill', 'label': 'FLUX.1 Fill', 'description': 'test'},
-    {'id': 'qwen-image-2.1', 'label': 'Qwen-Image 2.1', 'description': 'test'},
+    {'id': 'flux-fill', 'label': 'FLUX.1 Fill', 'description': 'test', 'availability': 'ready'},
+    {
+        'id': 'qwen-image-2.1',
+        'label': 'Qwen-Image 2.1',
+        'description': 'test',
+        'availability': 'ready',
+    },
 ]
 
 
@@ -114,6 +119,40 @@ class BotTests(TestCase):
         self.assertIn('FLUX.1 Fill', text)
         self.assertIn('Qwen-Image 2.1', text)
         self.assertIsNone(self.telegram.messages[-1]['reply_markup'])
+
+    def test_comparison_excludes_diagnostics_and_preserves_model_order(self):
+        with patch.object(
+            self.hromi,
+            'models',
+            return_value=[
+                {'id': 'passthrough', 'availability': 'ready'},
+                MODELS[1],
+                {'id': 'sd15-inpaint', 'availability': 'ready'},
+                MODELS[0],
+            ],
+        ):
+            self.assertEqual(self.bot._models(7), MODELS)
+
+    def test_incomplete_or_unverified_pair_never_falls_back(self):
+        for availability in ('missing', 'unknown', None):
+            with (
+                self.subTest(availability=availability),
+                patch.object(
+                    self.hromi,
+                    'models',
+                    return_value=[
+                        MODELS[0],
+                        {**MODELS[1], 'availability': availability},
+                        {'id': 'passthrough', 'availability': 'ready'},
+                        {'id': 'sd15-inpaint', 'availability': 'ready'},
+                    ],
+                ),
+            ):
+                self.bot.handle_update(self.photo_update())
+                self.assertEqual(self.bot._models(7), [])
+                self.assertEqual(self.hromi.created, [])
+                self.assertIsNone(self.store.comparison(42))
+                self.assertIn('пока недоступно', self.telegram.messages[-1]['text'])
 
     def test_old_callback_requests_comparison(self):
         self.bot.handle_update(

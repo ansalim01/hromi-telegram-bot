@@ -14,6 +14,10 @@ from .http import ApiError, HromiClient, TelegramClient
 from .store import TERMINAL_STATES, BotStore
 
 LOG = logging.getLogger('hromi.telegram')
+COMPARISON_MODELS = ('flux-fill', 'qwen-image-2.1')
+MODELS_UNAVAILABLE = (
+    'Сравнение FLUX и Qwen пока недоступно: модели ещё не готовы. Попробуйте позже.'
+)
 ALLOWED_TYPES = {'image/jpeg', 'image/png', 'image/webp'}
 STATE_LABELS = {
     'QUEUED': 'В очереди',
@@ -126,7 +130,7 @@ class HromiTelegramBot:
         if text in {'/start', '/help'}:
             self.telegram.send_message(
                 chat_id,
-                'Отправьте фотографию, и я обработаю её всеми доступными моделями '
+                'Отправьте фотографию, и я обработаю её моделями FLUX и Qwen '
                 'по очереди. Каждый результат придёт с названием модели. Отправляя фото, '
                 'подтвердите, что имеете право его обрабатывать.',
             )
@@ -138,25 +142,27 @@ class HromiTelegramBot:
         elif text:
             self.telegram.send_message(
                 chat_id,
-                'Отправьте фото для сравнения всех доступных моделей.',
+                'Отправьте фото для сравнения FLUX и Qwen.',
             )
 
     def _models(self, user_id: int):
-        models = self.hromi.models(user_id)
-        return [
-            model
-            for model in models
-            if isinstance(model.get('id'), str) and model.get('availability') != 'missing'
-        ]
+        models = {
+            model['id']: model
+            for model in self.hromi.models(user_id)
+            if model.get('id') in COMPARISON_MODELS and model.get('availability') == 'ready'
+        }
+        if any(model_id not in models for model_id in COMPARISON_MODELS):
+            return []
+        return [models[model_id] for model_id in COMPARISON_MODELS]
 
     def _show_models(self, user_id: int, chat_id: int):
         models = self._models(user_id)
         if not models:
-            self.telegram.send_message(chat_id, 'Сейчас нет доступных моделей.')
+            self.telegram.send_message(chat_id, MODELS_UNAVAILABLE)
             return
         self.telegram.send_message(
             chat_id,
-            'Обработаю фото всеми доступными моделями по очереди:\n'
+            'Обработаю фото моделями FLUX и Qwen по очереди:\n'
             + '\n'.join(f'• {model["label"]}' for model in models)
             + '\nОтправьте фотографию для сравнения.',
         )
@@ -242,7 +248,7 @@ class HromiTelegramBot:
 
         models = self._models(user_id)
         if not models:
-            self.telegram.send_message(chat_id, 'Сейчас нет доступных моделей.')
+            self.telegram.send_message(chat_id, MODELS_UNAVAILABLE)
             return
         comparison = self.store.add_comparison(
             update_id,
