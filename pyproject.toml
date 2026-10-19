@@ -5,11 +5,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hromi-telegram-bot"
 version = "0.1.0rc1"
+description = "A persistent Telegram photo-comparison client for the Hromi HTTP API"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]
 hromi-telegram-bot = "hromi_telegram_bot.cli:main"
+
+[project.urls]
+Repository = "https://github.com/ansalim01/hromi-telegram-bot"
+Issues = "https://github.com/ansalim01/hromi-telegram-bot/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
