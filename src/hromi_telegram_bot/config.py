@@ -5,13 +5,19 @@ from __future__ import annotations
 import ipaddress
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
 
 def secure_url(value):
+    if not isinstance(value, str) or any(ord(c) < 33 or ord(c) == 127 for c in value):
+        raise ValueError('Invalid service URL')
     parsed = urlsplit(value)
+    try:
+        _ = parsed.port
+    except ValueError:
+        raise ValueError('Invalid service URL port') from None
     if (
         parsed.scheme not in {'http', 'https'}
         or not parsed.hostname
@@ -66,9 +72,9 @@ def _positive_int(name: str, default: int) -> int:
 
 @dataclass(frozen=True)
 class BotConfig:
-    telegram_token: str
+    telegram_token: str = field(repr=False)
     hromi_base_url: str
-    hromi_api_key: str
+    hromi_api_key: str = field(repr=False)
     database_path: Path
     poll_interval_seconds: float = 2.0
     telegram_poll_seconds: int = 30
@@ -82,16 +88,23 @@ class BotConfig:
 
     @classmethod
     def from_env(cls, root: Path) -> 'BotConfig':
+        root = root.expanduser().resolve()
         load_dotenv(root / '.env')
         token = os.environ.get('TELEGRAM_BOT_TOKEN', '').strip()
         api_key = os.environ.get('HROMI_PUBLIC_API_KEY', '').strip()
         base_url = os.environ.get('HROMI_BASE_URL', 'http://127.0.0.1:8091').rstrip('/')
         if not token:
             raise ValueError('TELEGRAM_BOT_TOKEN is required')
+        if not token.isascii() or any(ord(c) < 33 or ord(c) == 127 for c in token):
+            raise ValueError('TELEGRAM_BOT_TOKEN must not contain whitespace or control characters')
         if not api_key:
             raise ValueError('HROMI_PUBLIC_API_KEY is required')
-        if len(api_key) < 32 or not api_key.isascii():
-            raise ValueError('HROMI_PUBLIC_API_KEY must contain at least 32 characters')
+        if (
+            len(api_key) < 32
+            or not api_key.isascii()
+            or any(ord(c) < 33 or ord(c) == 127 for c in api_key)
+        ):
+            raise ValueError('HROMI_PUBLIC_API_KEY requires at least 32 printable ASCII characters')
         parsed = secure_url(base_url)
         if (
             parsed.scheme not in {'http', 'https'}
@@ -123,6 +136,8 @@ class BotConfig:
         database = Path(
             os.environ.get('TELEGRAM_BOT_DB', str(root / 'data' / 'telegram-bot.sqlite3'))
         ).expanduser()
+        if not database.is_absolute():
+            database = root / database
         return cls(
             telegram_token=token,
             hromi_base_url=base_url,

@@ -155,13 +155,16 @@ class BotTests(TestCase):
 
     def test_failed_model_does_not_stop_other_models(self):
         self.bot._start_comparison = lambda comparison: None
-        self.hromi.states = [{'state': 'FAILED'}]
+        self.hromi.states = [{'state': 'FAILED', 'error': 'https://private.example/fixture-secret'}]
         self.bot.handle_update(self.photo_update())
         self.bot._compare(42)
         self.assertEqual(len(self.hromi.created), 2)
         self.assertEqual(len(self.telegram.photos), 1)
         self.assertIn('Qwen-Image 2.1', self.telegram.photos[0][-1])
         self.assertTrue(self.store.comparison(42)['finished'])
+        self.assertTrue(
+            all('fixture-secret' not in message['text'] for message in self.telegram.messages)
+        )
 
     def test_restores_current_model_without_submitting_again(self):
         self.bot._start_comparison = lambda comparison: None

@@ -1,4 +1,7 @@
 .env
+.env.*
+!.env.example
+*.env
 .env.*.local
 data/
 .venv/
@@ -11,4 +14,15 @@ dist/
 node_modules/
 .ruff_cache/
 *.log
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.pem
+*.key
+*.p12
+*.pfx
+*.zip
+*.tar.gz
 .DS_Store

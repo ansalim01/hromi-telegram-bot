@@ -14,7 +14,14 @@ from urllib.error import HTTPError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from hromi_telegram_bot.bot import HromiTelegramBot
 from hromi_telegram_bot.config import BotConfig
-from hromi_telegram_bot.http import ApiError, NoRedirects, _read_bounded, _request
+from hromi_telegram_bot.http import (
+    ApiError,
+    HromiClient,
+    NoRedirects,
+    TelegramClient,
+    _read_bounded,
+    _request,
+)
 from hromi_telegram_bot.store import BotStore
 
 
@@ -104,6 +111,53 @@ class Response:
 
 
 class TransportSecurityTests(TestCase):
+    def test_telegram_paths_cannot_escape_file_endpoint(self):
+        client = TelegramClient('test-token')
+        for path in [
+            '/file.jpg',
+            '../file.jpg',
+            'photos/../file.jpg',
+            'photos//file.jpg',
+            'photos\\file.jpg',
+            'photos/file\n.jpg',
+            None,
+        ]:
+            with self.subTest(path=path), patch('hromi_telegram_bot.http._request') as request:
+                with self.assertRaises(ApiError):
+                    client.download_file(path)
+                request.assert_not_called()
+
+    def test_telegram_path_is_encoded_without_redirecting_to_another_host(self):
+        headers = Message()
+        headers['Content-Type'] = 'image/jpeg'
+        client = TelegramClient('test-token')
+        with patch(
+            'hromi_telegram_bot.http._request', return_value=(200, headers, b'image')
+        ) as request:
+            client.download_file('photos/file #1.jpg')
+        self.assertEqual(
+            request.call_args.args[1],
+            'https://api.telegram.org/file/bottest-token/photos/file%20%231.jpg',
+        )
+
+    def test_backend_non_image_result_is_not_delivered(self):
+        headers = Message()
+        headers['Content-Type'] = 'text/html'
+        with patch('hromi_telegram_bot.http._request', return_value=(200, headers, b'<script>')):
+            with self.assertRaises(ApiError) as error:
+                HromiClient('https://backend.example', 'fixture-key').result(7, 'job')
+        self.assertEqual(error.exception.code, 'invalid_result_type')
+
+    def test_telegram_malformed_upload_response_becomes_sanitized_api_error(self):
+        for raw in [b'not-json', b'[]', b'null']:
+            with (
+                self.subTest(raw=raw),
+                patch('hromi_telegram_bot.http._request', return_value=(200, Message(), raw)),
+            ):
+                with self.assertRaises(ApiError) as error:
+                    TelegramClient('test-token').send_photo(7, b'image', 'x.png', 'image/png', '')
+            self.assertEqual(error.exception.code, 'invalid_json_response')
+
     def test_actual_and_declared_response_limits(self):
         for response in [Response(b'x' * 100), Response(b'', '100'), Response(b'', 'invalid')]:
             with self.assertRaises(ApiError):

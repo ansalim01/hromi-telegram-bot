@@ -492,7 +492,7 @@ class HromiTelegramBot:
                             job.get('model_label', '')
                             + '\n'
                             + 'Не удалось обработать фотографию. Код: '
-                            + (current.get('error') or state)
+                            + state
                         ).strip(),
                     )
                     return state
@@ -507,8 +507,10 @@ class HromiTelegramBot:
                     job['chat_id'],
                     'Связь временно потеряна. Задание сохранено; бот продолжит после перезапуска.',
                 )
-            except Exception:
-                pass
+            except Exception as notification_error:
+                LOG.warning(
+                    'Recovery notice unavailable type=%s', type(notification_error).__name__
+                )
         finally:
             with self._monitor_lock:
                 self._monitoring.discard(job_id)

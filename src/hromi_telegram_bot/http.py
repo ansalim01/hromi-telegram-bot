@@ -7,6 +7,7 @@ import json
 import mimetypes
 import secrets
 import time
+from pathlib import PurePosixPath
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -213,7 +214,10 @@ class HromiClient:
             timeout=120,
             max_bytes=64 * 1024 * 1024,
         )
-        return body, headers.get_content_type(), status
+        content_type = headers.get_content_type()
+        if content_type not in {'image/jpeg', 'image/png', 'image/webp'}:
+            raise ApiError('hromi', 502, 'invalid_result_type')
+        return body, content_type, status
 
 
 class TelegramClient:
@@ -252,6 +256,16 @@ class TelegramClient:
         return self.call('getFile', {'file_id': file_id})
 
     def download_file(self, file_path: str):
+        if (
+            not isinstance(file_path, str)
+            or not file_path
+            or file_path.startswith('/')
+            or '\\' in file_path
+            or any(ord(c) < 32 or ord(c) == 127 for c in file_path)
+            or any(part in {'.', '..', ''} for part in file_path.split('/'))
+            or str(PurePosixPath(file_path)) != file_path
+        ):
+            raise ApiError('telegram', 502, 'invalid_file_path')
         _, headers, body = _request(
             'GET',
             self._file_url + '/' + quote(file_path, safe='/'),
@@ -304,7 +318,12 @@ class TelegramClient:
                 body=body,
                 timeout=120,
             )
-            data = json.loads(raw)
+            try:
+                data = json.loads(raw)
+            except (ValueError, RecursionError):
+                raise ApiError('telegram', 502, 'invalid_json_response') from None
+            if not isinstance(data, dict):
+                raise ApiError('telegram', 502, 'invalid_json_response')
         except ApiError as error:
             error.service = 'telegram'
             raise

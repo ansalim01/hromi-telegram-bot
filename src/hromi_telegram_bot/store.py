@@ -195,6 +195,7 @@ class BotStore:
             )
 
     def has_active_job(self, user_id: int):
+        # Only internal '?' placeholders are interpolated; all values remain bound.
         placeholders = ','.join('?' for _ in TERMINAL_STATES)
         with closing(self._connect()) as db:
             if db.execute(
@@ -203,17 +204,18 @@ class BotStore:
                 return True
             return (
                 db.execute(
-                    f'SELECT 1 FROM jobs WHERE user_id = ? AND state NOT IN ({placeholders}) LIMIT 1',
+                    f'SELECT 1 FROM jobs WHERE user_id = ? AND state NOT IN ({placeholders}) LIMIT 1',  # nosec B608
                     (user_id, *TERMINAL_STATES),
                 ).fetchone()
                 is not None
             )
 
     def active_jobs(self):
+        # Only internal '?' placeholders are interpolated; all values remain bound.
         placeholders = ','.join('?' for _ in TERMINAL_STATES)
         with closing(self._connect()) as db:
             rows = db.execute(
-                f'SELECT * FROM jobs WHERE state NOT IN ({placeholders}) ORDER BY created_at',
+                f'SELECT * FROM jobs WHERE state NOT IN ({placeholders}) ORDER BY created_at',  # nosec B608
                 tuple(TERMINAL_STATES),
             ).fetchall()
             return [dict(row) for row in rows]
