@@ -103,7 +103,7 @@ webhook через Telegram Bot API. Запускайте один экземп�
 | `TELEGRAM_BOT_DB` | `./data/telegram-bot.sqlite3` относительно `--config-dir` |
 | `TELEGRAM_MAX_PHOTO_BYTES` | `8388608` — 8 MiB |
 | `TELEGRAM_MAX_ACTIVE_PHOTOS` | `20` активных сравнений |
-| `TELEGRAM_DAILY_PHOTOS_PER_USER` | `10` допусков за скользящие 24 часа |
+| `TELEGRAM_DAILY_PHOTOS_PER_USER` | `0` — суточный лимит отключён; положительное число включает его |
 | `TELEGRAM_MONITOR_WORKERS` | `20` фоновых наблюдателей |
 | `HROMI_POLL_INTERVAL_SECONDS` | `2` секунды между проверками job |
 | `TELEGRAM_POLL_SECONDS` | `30` секунд ожидания Telegram updates |

@@ -70,6 +70,16 @@ def _positive_int(name: str, default: int) -> int:
     return value
 
 
+def _nonnegative_int(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError as error:
+        raise ValueError(f'{name} must be a non-negative integer') from error
+    if value < 0:
+        raise ValueError(f'{name} must be a non-negative integer')
+    return value
+
+
 @dataclass(frozen=True)
 class BotConfig:
     telegram_token: str = field(repr=False)
@@ -84,7 +94,7 @@ class BotConfig:
     allow_any_user: bool = False
     allowed_group_ids: frozenset[int] = frozenset()
     max_active_photos: int = 20
-    daily_photos_per_user: int = 10
+    daily_photos_per_user: int = 0
 
     @classmethod
     def from_env(cls, root: Path) -> 'BotConfig':
@@ -151,5 +161,5 @@ class BotConfig:
             allow_any_user=open_access,
             allowed_group_ids=groups,
             max_active_photos=_positive_int('TELEGRAM_MAX_ACTIVE_PHOTOS', 20),
-            daily_photos_per_user=_positive_int('TELEGRAM_DAILY_PHOTOS_PER_USER', 10),
+            daily_photos_per_user=_nonnegative_int('TELEGRAM_DAILY_PHOTOS_PER_USER', 0),
         )

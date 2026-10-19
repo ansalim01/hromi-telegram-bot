@@ -86,6 +86,12 @@ class BotSecurityTests(TestCase):
             self.assertFalse(store.admit_photo(3, 8, 1, 1))
             self.assertEqual(store.path.stat().st_mode & 0o777, 0o600)
 
+    def test_zero_disables_daily_admission_limit(self):
+        with TemporaryDirectory() as directory:
+            store = BotStore(Path(directory) / 'bot.db')
+            self.assertTrue(store.admit_photo(1, 7, 20, 0))
+            self.assertTrue(store.admit_photo(2, 7, 20, 0))
+
     def test_monitor_admission_has_no_unbounded_executor_backlog(self):
         with TemporaryDirectory() as directory:
             config = BotConfig(

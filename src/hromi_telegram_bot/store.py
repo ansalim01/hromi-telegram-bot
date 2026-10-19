@@ -90,7 +90,7 @@ class BotStore:
             if (
                 active >= max_active
                 or stored >= 128 * 1024 * 1024
-                or count >= daily_limit
+                or (daily_limit and count >= daily_limit)
                 or total >= 1000
             ):
                 return False
