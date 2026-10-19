@@ -148,7 +148,9 @@ class BotTests(TestCase):
                     ],
                 ),
             ):
-                self.bot.handle_update(self.photo_update())
+                with patch.object(self.telegram, 'get_file') as get_file:
+                    self.bot.handle_update(self.photo_update())
+                    get_file.assert_not_called()
                 self.assertEqual(self.bot._models(7), [])
                 self.assertEqual(self.hromi.created, [])
                 self.assertIsNone(self.store.comparison(42))

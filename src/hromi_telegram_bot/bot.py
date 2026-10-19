@@ -218,6 +218,10 @@ class HromiTelegramBot:
         if self.store.has_active_job(user_id):
             self.telegram.send_message(chat_id, ACTIVE_PHOTO_NOTICE)
             return
+        models = self._models(user_id)
+        if not models:
+            self.telegram.send_message(chat_id, MODELS_UNAVAILABLE)
+            return
         if not self.store.admit_photo(
             update_id, user_id, self.config.max_active_photos, self.config.daily_photos_per_user
         ):
@@ -246,10 +250,6 @@ class HromiTelegramBot:
             self.telegram.send_message(chat_id, text)
             return
 
-        models = self._models(user_id)
-        if not models:
-            self.telegram.send_message(chat_id, MODELS_UNAVAILABLE)
-            return
         comparison = self.store.add_comparison(
             update_id,
             user_id,
