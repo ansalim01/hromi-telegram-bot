@@ -3,8 +3,8 @@
 [![Checks](https://github.com/ansalim01/hromi-telegram-bot/actions/workflows/checks.yml/badge.svg)](https://github.com/ansalim01/hromi-telegram-bot/actions/workflows/checks.yml)
 [![Security](https://github.com/ansalim01/hromi-telegram-bot/actions/workflows/security.yml/badge.svg)](https://github.com/ansalim01/hromi-telegram-bot/actions/workflows/security.yml)
 
-Telegram-бот для обработки фотографий через **Hromi HTTP API**. Получает список
-готовности FLUX и Qwen, запускает их последовательно для одной фотографии и возвращает
+Telegram-бот для обработки фотографий через **Hromi HTTP API**. Проверяет
+готовность FLUX и Qwen, запускает их последовательно для одной фотографии и возвращает
 результаты в чат с названием каждого workflow.
 
 Отдельное Python-приложение с постоянным состоянием в SQLite. Использует Telegram
