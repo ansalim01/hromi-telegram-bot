@@ -125,6 +125,8 @@ class BotTests(TestCase):
         self.assertIn('SD 1.5 Inpaint', text)
         self.assertIn('FLUX.1 Fill', text)
         self.assertIn('Qwen-Image 2.1', text)
+        self.assertIn('в полный рост', text)
+        self.assertIn('одежда в один слой', text)
         self.assertIsNone(self.telegram.messages[-1]['reply_markup'])
 
     def test_comparison_excludes_diagnostics_and_preserves_model_order(self):
