@@ -22,10 +22,6 @@ class NoRedirects(HTTPRedirectHandler):
 
 _OPENER = build_opener(NoRedirects())
 SAFE_ERROR_CODES = {
-    'age_check_blocked_underage',
-    'age_check_blocked_uncertain',
-    'age_check_blocked_no_face',
-    'age_check_blocked_error',
     'invalid_api_key',
     'public_api_disabled',
     'invalid_principal',

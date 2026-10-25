@@ -360,17 +360,6 @@ class HromiTelegramBot:
                     ),
                 )
             except ApiError as error:
-                if error.code.startswith('age_check_blocked_'):
-                    # Backend is the sole age-policy authority. Do not retry
-                    # the same rejected photo against every other workflow.
-                    self.store.finish_comparison(update_id)
-                    self.telegram.send_message(
-                        comparison['chat_id'],
-                        'Фото отклонено проверкой возраста на сервере. '
-                        'Лица должны быть хорошо видны; оценка не подтверждает возраст. '
-                        'Код: ' + error.code,
-                    )
-                    return True
                 if self._should_retry_update(error):
                     raise
                 self.telegram.send_message(
