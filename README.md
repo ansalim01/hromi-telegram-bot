@@ -1,5 +1,10 @@
 # Hromi Telegram Bot
 
+Проверка возраста выполняется централизованно в backend до очереди и запуска
+GPU. При ответе `age_check_blocked_*` бот прекращает всю серию, сообщает отказ
+и освобождает пользователя. Локальной ML-модели и обхода проверки в боте нет.
+Оценка возраста на фото не является подтверждением совершеннолетия.
+
 [![Checks](https://github.com/ansalim01/hromi-telegram-bot/actions/workflows/checks.yml/badge.svg)](https://github.com/ansalim01/hromi-telegram-bot/actions/workflows/checks.yml)
 [![Security](https://github.com/ansalim01/hromi-telegram-bot/actions/workflows/security.yml/badge.svg)](https://github.com/ansalim01/hromi-telegram-bot/actions/workflows/security.yml)
 

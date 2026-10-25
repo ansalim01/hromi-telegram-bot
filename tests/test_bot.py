@@ -215,6 +215,21 @@ class BotTests(TestCase):
         self.assertEqual(len(self.telegram.photos), 2)
         self.assertIn('FLUX.1 Fill', self.telegram.photos[0][-1])
         self.assertIn('Qwen-Image 2.1', self.telegram.photos[1][-1])
+
+    def test_backend_age_rejection_stops_comparison_and_releases_user(self):
+        self.bot._start_comparison = lambda comparison: None
+        self.bot.handle_update(self.photo_update())
+        with patch.object(
+            self.hromi,
+            'create_job',
+            side_effect=ApiError('hromi', 403, 'age_check_blocked_underage'),
+        ) as create:
+            self.bot._compare(42)
+        create.assert_called_once()
+        self.assertFalse(self.store.has_active_job(7))
+        self.assertIsNone(self.store.comparison(42)['payload'])
+        self.assertEqual(self.telegram.photos, [])
+        self.assertIn('проверкой возраста', self.telegram.messages[-1]['text'])
         self.assertTrue(self.store.comparison(42)['finished'])
         self.assertTrue(
             all('fixture-secret' not in message['text'] for message in self.telegram.messages)

@@ -22,6 +22,10 @@ class NoRedirects(HTTPRedirectHandler):
 
 _OPENER = build_opener(NoRedirects())
 SAFE_ERROR_CODES = {
+    'age_check_blocked_underage',
+    'age_check_blocked_uncertain',
+    'age_check_blocked_no_face',
+    'age_check_blocked_error',
     'invalid_api_key',
     'public_api_disabled',
     'invalid_principal',
@@ -182,6 +186,7 @@ class HromiClient:
         content_type: str,
         contents: bytes,
         model: str,
+        telegram_username: str | None = None,
     ):
         headers = self._headers(user_id)
         headers['Idempotency-Key'] = f'telegram-update-{update_id}'
@@ -193,6 +198,7 @@ class HromiClient:
                 'content_type': content_type,
                 'image': base64.b64encode(contents).decode('ascii'),
                 'model': model,
+                'telegram_username': telegram_username,
                 'comparison_id': f'telegram:{user_id}:{str(update_id).split("-model-", 1)[0]}',
             },
             headers=headers,

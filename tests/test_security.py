@@ -1,6 +1,7 @@
 """Offline bot admission, transport and credential isolation regressions."""
 
 import io
+import json
 import os
 import sys
 import time
@@ -26,6 +27,26 @@ from hromi_telegram_bot.store import BotStore
 
 
 class BotSecurityTests(TestCase):
+    def test_backend_age_error_codes_survive_safe_error_filter(self):
+        for code in [
+            'age_check_blocked_underage',
+            'age_check_blocked_uncertain',
+            'age_check_blocked_no_face',
+            'age_check_blocked_error',
+        ]:
+            error = HTTPError(
+                'https://backend.example/api/v1/jobs',
+                403,
+                'forbidden',
+                Message(),
+                io.BytesIO(json.dumps({'error': code}).encode()),
+            )
+            with patch('hromi_telegram_bot.http._OPENER.open', side_effect=error):
+                with self.assertRaises(ApiError) as result:
+                    _request('POST', 'https://backend.example/api/v1/jobs')
+            self.assertEqual(result.exception.code, code)
+            self.assertEqual(result.exception.status, 403)
+
     def test_empty_allowlist_requires_explicit_open_mode(self):
         values = {'TELEGRAM_BOT_TOKEN': 'fake', 'HROMI_PUBLIC_API_KEY': 's' * 40}
         with TemporaryDirectory() as directory, patch.dict(os.environ, values, clear=True):

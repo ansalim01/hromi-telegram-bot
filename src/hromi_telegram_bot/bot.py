@@ -137,8 +137,7 @@ class HromiTelegramBot:
                 chat_id,
                 'Отправьте фотографию, и я обработаю её моделями SD 1.5, FLUX и Qwen '
                 'по очереди. Каждый результат придёт с названием модели. Отправляя фото, '
-                'подтвердите, что имеете право его обрабатывать.\n\n'
-                + PHOTO_GUIDANCE,
+                'подтвердите, что имеете право его обрабатывать.\n\n' + PHOTO_GUIDANCE,
             )
             self._show_models(user_id, chat_id)
         elif text == '/model':
@@ -264,6 +263,7 @@ class HromiTelegramBot:
             chat_id,
             {
                 'filename': filename,
+                'telegram_username': (message.get('from') or {}).get('username'),
                 'content_type': content_type,
                 'image': base64.b64encode(contents).decode('ascii'),
             },
@@ -353,8 +353,24 @@ class HromiTelegramBot:
                     payload['content_type'],
                     base64.b64decode(payload['image']),
                     model['id'],
+                    **(
+                        {'telegram_username': payload['telegram_username']}
+                        if payload.get('telegram_username')
+                        else {}
+                    ),
                 )
             except ApiError as error:
+                if error.code.startswith('age_check_blocked_'):
+                    # Backend is the sole age-policy authority. Do not retry
+                    # the same rejected photo against every other workflow.
+                    self.store.finish_comparison(update_id)
+                    self.telegram.send_message(
+                        comparison['chat_id'],
+                        'Фото отклонено проверкой возраста на сервере. '
+                        'Лица должны быть хорошо видны; оценка не подтверждает возраст. '
+                        'Код: ' + error.code,
+                    )
+                    return True
                 if self._should_retry_update(error):
                     raise
                 self.telegram.send_message(
