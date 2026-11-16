@@ -67,13 +67,17 @@ class FakeTelegram:
 class FakeHromi:
     def __init__(self):
         self.created = []
+        self.usernames = []
         self.states = []
 
     def models(self, user_id):
         return MODELS
 
-    def create_job(self, user_id, update_id, filename, content_type, contents, model):
+    def create_job(
+        self, user_id, update_id, filename, content_type, contents, model, telegram_username=None
+    ):
         self.created.append((user_id, update_id, filename, content_type, contents, model))
+        self.usernames.append(telegram_username)
         return {'id': f'{len(self.created):032x}', 'state': 'QUEUED', 'queue_position': 2}
 
     def job(self, user_id, job_id):
@@ -179,12 +183,15 @@ class BotTests(TestCase):
         )
         self.assertIn('Отправьте фотографию', self.telegram.messages[-1]['text'])
 
-    def photo_update(self, update_id=42):
+    def photo_update(self, update_id=42, username=None):
+        author = {'id': 7}
+        if username is not None:
+            author['username'] = username
         return {
             'update_id': update_id,
             'message': {
                 'message_id': 10,
-                'from': {'id': 7},
+                'from': author,
                 'chat': {'id': 8},
                 'photo': [{'file_id': 'photo', 'file_size': 100}],
             },
@@ -205,6 +212,20 @@ class BotTests(TestCase):
             self.assertIn(model['label'], photo[-1])
         self.assertFalse(self.store.has_active_job(7))
         self.assertIsNone(self.store.comparison(42)['payload'])
+
+    def test_telegram_username_is_sent_with_every_model(self):
+        self.bot._start_comparison = lambda comparison: None
+        self.bot.handle_update(self.photo_update(username='ansalim_01'))
+        self.bot._compare(42)
+        self.assertEqual(len(self.hromi.created), 3)
+        self.assertEqual(self.hromi.usernames, ['ansalim_01'] * 3)
+
+    def test_photo_without_telegram_username_omits_it(self):
+        self.bot._start_comparison = lambda comparison: None
+        self.bot.handle_update(self.photo_update())
+        self.bot._compare(42)
+        self.assertEqual(len(self.hromi.created), 3)
+        self.assertEqual(self.hromi.usernames, [None] * 3)
 
     def test_failed_model_does_not_stop_other_models(self):
         self.bot._start_comparison = lambda comparison: None
