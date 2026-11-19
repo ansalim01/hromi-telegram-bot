@@ -183,6 +183,7 @@ class HromiClient:
         contents: bytes,
         model: str,
         telegram_username: str | None = None,
+        gender: str | None = None,
     ):
         headers = self._headers(user_id)
         headers['Idempotency-Key'] = f'telegram-update-{update_id}'
@@ -194,6 +195,7 @@ class HromiClient:
                 'content_type': content_type,
                 'image': base64.b64encode(contents).decode('ascii'),
                 'model': model,
+                'gender': gender,
                 'telegram_username': telegram_username,
                 'comparison_id': f'telegram:{user_id}:{str(update_id).split("-model-", 1)[0]}',
             },

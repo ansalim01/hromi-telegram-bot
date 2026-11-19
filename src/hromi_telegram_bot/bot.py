@@ -15,10 +15,9 @@ from .http import ApiError, HromiClient, TelegramClient
 from .store import TERMINAL_STATES, BotStore
 
 LOG = logging.getLogger('hromi.telegram')
-COMPARISON_MODELS_BY_GENDER = {
-    'female': ('sd15-inpaint-female', 'flux-fill-female', 'qwen-image-2.1-female'),
-    'male': ('sd15-inpaint-male', 'flux-fill-male', 'qwen-image-2.1-male'),
-}
+# Comparison runs these model families in order; the backend resolves each
+# gender-neutral key to the variant for the selected subject.
+COMPARISON_MODELS = ('sd15-inpaint', 'flux-fill', 'qwen-image-2.1')
 GENDER_KEYBOARD = {
     'inline_keyboard': [
         [
@@ -170,17 +169,27 @@ class HromiTelegramBot:
 
     def _models(self, user_id: int, gender: str | None = None):
         gender = gender or self.store.gender(user_id)
-        if gender not in COMPARISON_MODELS_BY_GENDER:
+        if gender not in GENDER_LABELS:
             return []
-        model_ids = COMPARISON_MODELS_BY_GENDER[gender]
-        models = {
-            model['id']: model
+        catalog = {
+            model.get('id'): model
             for model in self.hromi.models(user_id)
-            if model.get('id') in model_ids and model.get('availability') == 'ready'
+            if model.get('availability') == 'ready'
         }
-        if any(model_id not in models for model_id in model_ids):
+        if not catalog:
             return []
-        return [models[model_id] for model_id in model_ids]
+        # The backend resolves the bare key to the variant for this gender.
+        models = []
+        for key in COMPARISON_MODELS:
+            model = catalog.get(key)
+            if model is None:
+                variant = f'{key}-{gender}'
+                model = catalog.get(variant)
+                if model is None:
+                    return []
+                model = {**model, 'id': key}
+            models.append(model)
+        return models
 
     def _ask_gender(self, chat_id: int):
         self.telegram.send_message(
@@ -235,7 +244,14 @@ class HromiTelegramBot:
             return
         model_id = data[6:]
         models = {model['id']: model for model in self._models(user_id)}
-        if model_id not in models:
+        # Accept both the base key and a gender-suffixed id from older keyboards.
+        base_id = model_id
+        for gender in GENDER_LABELS:
+            suffix = '-' + gender
+            if base_id.endswith(suffix):
+                base_id = base_id[: -len(suffix)]
+                break
+        if base_id not in models:
             self.telegram.answer_callback(callback_id, 'Модель больше недоступна')
             return
         self.telegram.answer_callback(callback_id, 'Включено сравнение всех моделей')
@@ -311,6 +327,7 @@ class HromiTelegramBot:
             chat_id,
             json.loads(pending['message']),
             self._models(user_id),
+            self.store.gender(user_id),
         )
         try:
             self.telegram.send_message(
@@ -397,6 +414,7 @@ class HromiTelegramBot:
                 'image': base64.b64encode(contents).decode('ascii'),
             },
             models,
+            gender,
         )
         try:
             self.telegram.send_message(
@@ -474,6 +492,9 @@ class HromiTelegramBot:
         job_id = comparison['current_job_id']
         if job_id is None:
             payload = comparison['payload']
+            # Comparisons stored before genders were persisted fall back to the
+            # user's current setting so an upgrade does not strand them.
+            gender = comparison.get('gender') or self.store.gender(comparison['user_id'])
             try:
                 current = self.hromi.create_job(
                     comparison['user_id'],
@@ -482,6 +503,7 @@ class HromiTelegramBot:
                     payload['content_type'],
                     base64.b64decode(payload['image']),
                     model['id'],
+                    gender=gender,
                     **(
                         {'telegram_username': payload['telegram_username']}
                         if payload.get('telegram_username')

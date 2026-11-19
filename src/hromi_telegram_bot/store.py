@@ -59,6 +59,7 @@ class BotStore:
                     models TEXT NOT NULL,
                     next_index INTEGER NOT NULL DEFAULT 0,
                     current_job_id TEXT,
+                    gender TEXT,
                     finished INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS comparison_steps (
@@ -84,6 +85,9 @@ class BotStore:
             columns = {row[1] for row in db.execute('PRAGMA table_info(settings)').fetchall()}
             if 'gender' not in columns:
                 db.execute('ALTER TABLE settings ADD COLUMN gender TEXT')
+            columns = {row[1] for row in db.execute('PRAGMA table_info(comparisons)').fetchall()}
+            if 'gender' not in columns:
+                db.execute('ALTER TABLE comparisons ADD COLUMN gender TEXT')
 
     def admit_photo(self, update_id, user_id, max_active, daily_limit):
         with self._transaction() as db:
@@ -309,12 +313,19 @@ class BotStore:
             value['payload'] = json.loads(value['payload']) if value['payload'] else None
             return value
 
-    def add_comparison(self, update_id, user_id, chat_id, payload, models):
+    def add_comparison(self, update_id, user_id, chat_id, payload, models, gender=None):
         with self._transaction() as db:
             db.execute(
-                """INSERT INTO comparisons(update_id, user_id, chat_id, payload, models)
-                          VALUES(?, ?, ?, ?, ?) ON CONFLICT(update_id) DO NOTHING""",
-                (update_id, user_id, chat_id, json.dumps(payload), json.dumps(models)),
+                """INSERT INTO comparisons(update_id, user_id, chat_id, payload, models, gender)
+                          VALUES(?, ?, ?, ?, ?, ?) ON CONFLICT(update_id) DO NOTHING""",
+                (
+                    update_id,
+                    user_id,
+                    chat_id,
+                    json.dumps(payload),
+                    json.dumps(models),
+                    gender,
+                ),
             )
         return self.comparison(update_id)
 

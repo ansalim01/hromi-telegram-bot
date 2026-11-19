@@ -10,6 +10,10 @@ from hromi_telegram_bot.config import BotConfig
 from hromi_telegram_bot.http import ApiError
 from hromi_telegram_bot.store import BotStore
 
+# The bot compares model families in order; the backend maps each key to the
+# variant for the subject gender.
+COMPARISON_KEYS = ['sd15-inpaint', 'flux-fill', 'qwen-image-2.1']
+
 MODELS = [
     {
         'id': 'sd15-inpaint-female',
@@ -94,16 +98,26 @@ class FakeHromi:
     def __init__(self):
         self.created = []
         self.usernames = []
+        self.genders = []
         self.states = []
 
     def models(self, user_id):
         return MODELS + MALE_MODELS
 
     def create_job(
-        self, user_id, update_id, filename, content_type, contents, model, telegram_username=None
+        self,
+        user_id,
+        update_id,
+        filename,
+        content_type,
+        contents,
+        model,
+        telegram_username=None,
+        gender=None,
     ):
         self.created.append((user_id, update_id, filename, content_type, contents, model))
         self.usernames.append(telegram_username)
+        self.genders.append(gender)
         return {'id': f'{len(self.created):032x}', 'state': 'QUEUED', 'queue_position': 2}
 
     def job(self, user_id, job_id):
@@ -171,7 +185,12 @@ class BotTests(TestCase):
                 MODELS[1],
             ],
         ):
-            self.assertEqual(self.bot._models(7), MODELS)
+            # The bot sends base keys; labels still come from the catalog.
+            self.assertEqual([model['id'] for model in self.bot._models(7)], COMPARISON_KEYS)
+            self.assertEqual(
+                [model['label'] for model in self.bot._models(7)],
+                [model['label'] for model in MODELS],
+            )
 
     def test_incomplete_or_unverified_pair_never_falls_back(self):
         for availability in ('missing', 'unknown', None):
@@ -231,7 +250,7 @@ class BotTests(TestCase):
         self.bot._compare(42)
         self.assertEqual(
             [job[-1] for job in self.hromi.created],
-            ['sd15-inpaint-female', 'flux-fill-female', 'qwen-image-2.1-female'],
+            COMPARISON_KEYS,
         )
         self.assertNotEqual(self.hromi.created[0][1], self.hromi.created[1][1])
         self.assertEqual(len(self.telegram.photos), 3)
@@ -277,7 +296,7 @@ class BotTests(TestCase):
         self.bot._compare(42)
         self.assertEqual(
             [job[-1] for job in self.hromi.created],
-            ['flux-fill-female', 'qwen-image-2.1-female'],
+            COMPARISON_KEYS[1:],
         )
         self.assertEqual(len(self.telegram.photos), 3)
 
@@ -462,21 +481,48 @@ class BotTests(TestCase):
         self.bot._compare(42)
         self.assertEqual(
             [job[-1] for job in self.hromi.created],
-            ['sd15-inpaint-male', 'flux-fill-male', 'qwen-image-2.1-male'],
+            COMPARISON_KEYS,
         )
         self.assertIsNone(self.bot.store.pending_photo(7))
 
     def test_gender_choice_changes_model_set(self):
         self.store.set_gender(7, 'male')
         self.assertEqual(
-            [model['id'] for model in self.bot._models(7)],
-            ['sd15-inpaint-male', 'flux-fill-male', 'qwen-image-2.1-male'],
+            [model['label'] for model in self.bot._models(7)],
+            [model['label'] for model in MALE_MODELS],
         )
         self.store.set_gender(7, 'female')
         self.assertEqual(
-            [model['id'] for model in self.bot._models(7)],
-            ['sd15-inpaint-female', 'flux-fill-female', 'qwen-image-2.1-female'],
+            [model['label'] for model in self.bot._models(7)],
+            [model['label'] for model in MODELS],
         )
+
+    def test_models_accept_catalog_that_lists_gendered_ids(self):
+        self.store.set_gender(7, 'male')
+        with patch.object(self.hromi, 'models', return_value=MALE_MODELS + MODELS):
+            self.assertEqual([model['id'] for model in self.bot._models(7)], COMPARISON_KEYS)
+            self.assertEqual(
+                [model['label'] for model in self.bot._models(7)],
+                [model['label'] for model in MALE_MODELS],
+            )
+
+    def test_each_comparison_job_carries_the_subject_gender(self):
+        self.bot._start_comparison = lambda comparison: None
+        self.store.set_gender(7, 'male')
+        self.bot.handle_update(self.photo_update())
+        self.bot._compare(42)
+        self.assertEqual(self.hromi.genders, ['male'] * len(COMPARISON_KEYS))
+        self.assertEqual(self.store.comparison(42)['gender'], 'male')
+
+    def test_queued_comparison_without_stored_gender_uses_user_setting(self):
+        # Comparisons created before the comparison row stored a gender.
+        self.bot._start_comparison = lambda comparison: None
+        self.store.set_gender(7, 'female')
+        self.bot.handle_update(self.photo_update())
+        with self.store._transaction() as db:
+            db.execute('UPDATE comparisons SET gender = NULL WHERE update_id = 42')
+        self.bot._compare(42)
+        self.assertEqual(self.hromi.genders, ['female'] * len(COMPARISON_KEYS))
 
     def test_pending_photo_survives_restart_and_resumes_after_gender(self):
         self.bot._start_comparison = lambda comparison: None
@@ -495,5 +541,5 @@ class BotTests(TestCase):
         reopened._compare(42)
         self.assertEqual(
             [job[-1] for job in self.hromi.created],
-            ['sd15-inpaint-female', 'flux-fill-female', 'qwen-image-2.1-female'],
+            COMPARISON_KEYS,
         )
