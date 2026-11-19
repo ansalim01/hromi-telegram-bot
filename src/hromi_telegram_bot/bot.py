@@ -289,12 +289,12 @@ class HromiTelegramBot:
         )
 
     def _resume_pending_photo(self, user_id: int):
-        pending = self.store.pending_photo(user_id)
+        pending = self.store.claim_pending_photo(user_id)
         if not pending:
             return
         update_id = pending['update_id']
+        chat_id = pending['chat_id']
         if self.store.comparison(update_id) or self.store.job_for_update(update_id):
-            self.store.clear_pending_photo(user_id)
             return
         if self.store.has_active_job(user_id):
             return
@@ -302,21 +302,19 @@ class HromiTelegramBot:
             update_id, user_id, self.config.max_active_photos, self.config.daily_photos_per_user
         ):
             self.telegram.send_message(
-                pending['chat_id'], 'Лимит фотографий или очередь исчерпаны. Попробуйте позже.'
+                chat_id, 'Лимит фотографий или очередь исчерпаны. Попробуйте позже.'
             )
-            self.store.clear_pending_photo(user_id)
             return
-        self.store.clear_pending_photo(user_id)
         comparison = self.store.add_comparison(
             update_id,
             user_id,
-            pending['chat_id'],
+            chat_id,
             json.loads(pending['message']),
             self._models(user_id),
         )
         try:
             self.telegram.send_message(
-                pending['chat_id'],
+                chat_id,
                 f'Фото принято. Моделей для сравнения: {len(comparison["models"])}. '
                 'Результаты будут приходить по очереди.\n'
                 'Обычно каждая обработка занимает 5–10 минут; при очереди — дольше.',

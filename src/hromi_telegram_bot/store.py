@@ -176,6 +176,23 @@ class BotStore:
             ).fetchone()
             return dict(row) if row else None
 
+    def claim_pending_photo(self, user_id: int):
+        """Atomically take the pending photo so concurrent resumes cannot double-submit."""
+        db = self._connect()
+        try:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute(
+                'SELECT * FROM pending_photos WHERE user_id = ?', (user_id,)
+            ).fetchone()
+            if row is None:
+                db.execute('COMMIT')
+                return None
+            db.execute('DELETE FROM pending_photos WHERE user_id = ?', (user_id,))
+            db.execute('COMMIT')
+            return dict(row)
+        finally:
+            db.close()
+
     def clear_pending_photo(self, user_id: int):
         with self._transaction() as db:
             db.execute('DELETE FROM pending_photos WHERE user_id = ?', (user_id,))

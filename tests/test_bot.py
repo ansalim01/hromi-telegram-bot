@@ -489,6 +489,7 @@ class BotTests(TestCase):
             self.config, self.telegram, self.hromi, BotStore(self.config.database_path)
         )
         self.addCleanup(reopened.close)
+        reopened._start_comparison = lambda comparison: None
         reopened.store.set_gender(7, 'female')
         reopened._resume_pending_photo(7)
         reopened._compare(42)
