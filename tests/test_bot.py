@@ -12,15 +12,41 @@ from hromi_telegram_bot.store import BotStore
 
 MODELS = [
     {
-        'id': 'sd15-inpaint',
-        'label': 'SD 1.5 Inpaint',
+        'id': 'sd15-inpaint-female',
+        'label': 'SD 1.5 Inpaint (женщины)',
         'description': 'test',
         'availability': 'ready',
     },
-    {'id': 'flux-fill', 'label': 'FLUX.1 Fill', 'description': 'test', 'availability': 'ready'},
     {
-        'id': 'qwen-image-2.1',
-        'label': 'Qwen-Image 2.1',
+        'id': 'flux-fill-female',
+        'label': 'FLUX.1 Fill (женщины)',
+        'description': 'test',
+        'availability': 'ready',
+    },
+    {
+        'id': 'qwen-image-2.1-female',
+        'label': 'Qwen-Image 2.1 (женщины)',
+        'description': 'test',
+        'availability': 'ready',
+    },
+]
+
+MALE_MODELS = [
+    {
+        'id': 'sd15-inpaint-male',
+        'label': 'SD 1.5 Inpaint (мужчины)',
+        'description': 'test',
+        'availability': 'ready',
+    },
+    {
+        'id': 'flux-fill-male',
+        'label': 'FLUX.1 Fill (мужчины)',
+        'description': 'test',
+        'availability': 'ready',
+    },
+    {
+        'id': 'qwen-image-2.1-male',
+        'label': 'Qwen-Image 2.1 (мужчины)',
         'description': 'test',
         'availability': 'ready',
     },
@@ -71,7 +97,7 @@ class FakeHromi:
         self.states = []
 
     def models(self, user_id):
-        return MODELS
+        return MODELS + MALE_MODELS
 
     def create_job(
         self, user_id, update_id, filename, content_type, contents, model, telegram_username=None
@@ -111,6 +137,7 @@ class BotTests(TestCase):
             self.hromi,
             self.store,
         )
+        self.store.set_gender(7, 'female')
         self.addCleanup(self.bot.close)
 
     def test_start_shows_backend_models(self):
@@ -177,7 +204,7 @@ class BotTests(TestCase):
                     'id': 'callback-1',
                     'from': {'id': 7},
                     'message': {'chat': {'id': 8}},
-                    'data': 'model:qwen-image-2.1',
+                    'data': 'model:qwen-image-2.1-female',
                 },
             }
         )
@@ -204,7 +231,7 @@ class BotTests(TestCase):
         self.bot._compare(42)
         self.assertEqual(
             [job[-1] for job in self.hromi.created],
-            ['sd15-inpaint', 'flux-fill', 'qwen-image-2.1'],
+            ['sd15-inpaint-female', 'flux-fill-female', 'qwen-image-2.1-female'],
         )
         self.assertNotEqual(self.hromi.created[0][1], self.hromi.created[1][1])
         self.assertEqual(len(self.telegram.photos), 3)
@@ -248,7 +275,10 @@ class BotTests(TestCase):
         self.bot.store = BotStore(self.config.database_path)
         self.assertEqual(len(self.bot.store.active_comparisons()), 1)
         self.bot._compare(42)
-        self.assertEqual([job[-1] for job in self.hromi.created], ['flux-fill', 'qwen-image-2.1'])
+        self.assertEqual(
+            [job[-1] for job in self.hromi.created],
+            ['flux-fill-female', 'qwen-image-2.1-female'],
+        )
         self.assertEqual(len(self.telegram.photos), 3)
 
     def test_second_photo_blocked_for_entire_comparison(self):
@@ -409,3 +439,60 @@ class BotTests(TestCase):
         self.bot._compare(42)
         self.assertEqual(len(self.telegram.photos), 3)
         self.assertFalse(self.bot.store.has_active_job(7))
+
+    def test_photo_without_gender_is_held_until_choice(self):
+        self.store.set_gender(7, None)
+        self.bot.store = BotStore(self.config.database_path)
+        self.bot._start_comparison = lambda comparison: None
+        self.bot.handle_update(self.photo_update())
+        self.assertEqual(self.hromi.created, [])
+        self.assertIn('Выберите, кого обрабатываем', self.telegram.messages[-1]['text'])
+        self.assertIsNotNone(self.bot.store.pending_photo(7))
+        self.bot.handle_update(
+            {
+                'update_id': 43,
+                'callback_query': {
+                    'id': 'callback-2',
+                    'from': {'id': 7},
+                    'message': {'chat': {'id': 8}},
+                    'data': 'gender:male',
+                },
+            }
+        )
+        self.bot._compare(42)
+        self.assertEqual(
+            [job[-1] for job in self.hromi.created],
+            ['sd15-inpaint-male', 'flux-fill-male', 'qwen-image-2.1-male'],
+        )
+        self.assertIsNone(self.bot.store.pending_photo(7))
+
+    def test_gender_choice_changes_model_set(self):
+        self.store.set_gender(7, 'male')
+        self.assertEqual(
+            [model['id'] for model in self.bot._models(7)],
+            ['sd15-inpaint-male', 'flux-fill-male', 'qwen-image-2.1-male'],
+        )
+        self.store.set_gender(7, 'female')
+        self.assertEqual(
+            [model['id'] for model in self.bot._models(7)],
+            ['sd15-inpaint-female', 'flux-fill-female', 'qwen-image-2.1-female'],
+        )
+
+    def test_pending_photo_survives_restart_and_resumes_after_gender(self):
+        self.bot._start_comparison = lambda comparison: None
+        self.store.set_gender(7, None)
+        self.bot.store = BotStore(self.config.database_path)
+        self.assertIsNone(self.bot.store.gender(7))
+        self.bot.handle_update(self.photo_update())
+        self.assertIsNotNone(self.bot.store.pending_photo(7))
+        reopened = HromiTelegramBot(
+            self.config, self.telegram, self.hromi, BotStore(self.config.database_path)
+        )
+        self.addCleanup(reopened.close)
+        reopened.store.set_gender(7, 'female')
+        reopened._resume_pending_photo(7)
+        reopened._compare(42)
+        self.assertEqual(
+            [job[-1] for job in self.hromi.created],
+            ['sd15-inpaint-female', 'flux-fill-female', 'qwen-image-2.1-female'],
+        )

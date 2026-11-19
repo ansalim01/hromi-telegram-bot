@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import mimetypes
 import threading
@@ -14,7 +15,19 @@ from .http import ApiError, HromiClient, TelegramClient
 from .store import TERMINAL_STATES, BotStore
 
 LOG = logging.getLogger('hromi.telegram')
-COMPARISON_MODELS = ('sd15-inpaint', 'flux-fill', 'qwen-image-2.1')
+COMPARISON_MODELS_BY_GENDER = {
+    'female': ('sd15-inpaint-female', 'flux-fill-female', 'qwen-image-2.1-female'),
+    'male': ('sd15-inpaint-male', 'flux-fill-male', 'qwen-image-2.1-male'),
+}
+GENDER_KEYBOARD = {
+    'inline_keyboard': [
+        [
+            {'text': '👨 Мужчина', 'callback_data': 'gender:male'},
+            {'text': '👩 Женщина', 'callback_data': 'gender:female'},
+        ]
+    ]
+}
+GENDER_LABELS = {'male': 'мужчина', 'female': 'женщина'}
 MODELS_UNAVAILABLE = (
     'Сравнение SD 1.5, FLUX и Qwen пока недоступно: модели ещё не готовы. Попробуйте позже.'
 )
@@ -67,6 +80,9 @@ class HromiTelegramBot:
             self._start_monitor(job)
         for comparison in self.store.active_comparisons():
             self._start_comparison(comparison)
+        for user_id in self.store.pending_photo_users():
+            if self.store.gender(user_id) and not self.store.has_active_job(user_id):
+                self._resume_pending_photo(user_id)
 
     def run(self):
         self._restore_monitors()
@@ -140,6 +156,8 @@ class HromiTelegramBot:
                 'подтвердите, что имеете право его обрабатывать.\n\n' + PHOTO_GUIDANCE,
             )
             self._show_models(user_id, chat_id)
+        elif text == '/gender':
+            self._ask_gender(chat_id)
         elif text == '/model':
             self._show_models(user_id, chat_id)
         elif message.get('photo') or message.get('document'):
@@ -150,24 +168,40 @@ class HromiTelegramBot:
                 'Отправьте фото для сравнения SD 1.5, FLUX и Qwen.',
             )
 
-    def _models(self, user_id: int):
+    def _models(self, user_id: int, gender: str | None = None):
+        gender = gender or self.store.gender(user_id)
+        if gender not in COMPARISON_MODELS_BY_GENDER:
+            return []
+        model_ids = COMPARISON_MODELS_BY_GENDER[gender]
         models = {
             model['id']: model
             for model in self.hromi.models(user_id)
-            if model.get('id') in COMPARISON_MODELS and model.get('availability') == 'ready'
+            if model.get('id') in model_ids and model.get('availability') == 'ready'
         }
-        if any(model_id not in models for model_id in COMPARISON_MODELS):
+        if any(model_id not in models for model_id in model_ids):
             return []
-        return [models[model_id] for model_id in COMPARISON_MODELS]
+        return [models[model_id] for model_id in model_ids]
+
+    def _ask_gender(self, chat_id: int):
+        self.telegram.send_message(
+            chat_id,
+            'Кого будем обрабатывать? Выбор применится к следующему фото и запомнится для будущих.',
+            reply_markup=GENDER_KEYBOARD,
+        )
 
     def _show_models(self, user_id: int, chat_id: int):
-        models = self._models(user_id)
+        gender = self.store.gender(user_id)
+        models = self._models(user_id, gender)
         if not models:
+            if gender is None:
+                self._ask_gender(chat_id)
+                return
             self.telegram.send_message(chat_id, MODELS_UNAVAILABLE)
             return
         self.telegram.send_message(
             chat_id,
-            'Обработаю фото моделями SD 1.5, FLUX и Qwen по очереди:\n'
+            'Обработаю фото моделями SD 1.5, FLUX и Qwen по очереди '
+            f'(пол: {GENDER_LABELS[gender]}):\n'
             + '\n'.join(f'• {model["label"]}' for model in models)
             + '\n\n'
             + PHOTO_GUIDANCE
@@ -186,6 +220,16 @@ class HromiTelegramBot:
             self.telegram.answer_callback(callback_id, 'Доступ закрыт')
             return
         data = callback.get('data') or ''
+        if data.startswith('gender:'):
+            gender = data[7:]
+            if gender not in GENDER_LABELS:
+                self.telegram.answer_callback(callback_id, 'Неизвестный выбор')
+                return
+            self.store.set_gender(user_id, gender)
+            self.telegram.answer_callback(callback_id, 'Выбрано: ' + GENDER_LABELS[gender])
+            self._resume_pending_photo(user_id)
+            self._show_models(user_id, chat_id)
+            return
         if not data.startswith('model:'):
             self.telegram.answer_callback(callback_id)
             return
@@ -196,6 +240,89 @@ class HromiTelegramBot:
             return
         self.telegram.answer_callback(callback_id, 'Включено сравнение всех моделей')
         self._show_models(user_id, chat_id)
+
+    def _store_pending_photo(self, update_id: int, user_id: int, chat_id: int, message):
+        if not self.store.admit_photo(
+            update_id, user_id, self.config.max_active_photos, self.config.daily_photos_per_user
+        ):
+            self.telegram.send_message(
+                chat_id, 'Лимит фотографий или очередь исчерпаны. Попробуйте позже.'
+            )
+            return
+        try:
+            file_id, filename, declared_type, declared_size = self._photo_reference(
+                user_id,
+                message,
+            )
+            if declared_size and declared_size > self.config.max_photo_bytes:
+                raise ValueError('too_large')
+            telegram_file = self.telegram.get_file(file_id)
+            contents, downloaded_type = self.telegram.download_file(telegram_file['file_path'])
+            if len(contents) > self.config.max_photo_bytes:
+                raise ValueError('too_large')
+            content_type = declared_type or downloaded_type
+            if content_type not in ALLOWED_TYPES:
+                content_type = mimetypes.guess_type(filename)[0]
+            if content_type not in ALLOWED_TYPES:
+                raise ValueError('unsupported_type')
+        except ValueError as error:
+            text = 'Файл больше 8 МБ.' if str(error) == 'too_large' else 'Нужен JPEG, PNG или WebP.'
+            self.telegram.send_message(chat_id, text)
+            return
+        self.store.set_pending_photo(
+            user_id,
+            update_id,
+            chat_id,
+            json.dumps(
+                {
+                    'filename': filename,
+                    'telegram_username': (message.get('from') or {}).get('username'),
+                    'content_type': content_type,
+                    'image': base64.b64encode(contents).decode('ascii'),
+                }
+            ),
+        )
+        self.telegram.send_message(
+            chat_id,
+            'Фото получено. Выберите, кого обрабатываем:',
+            reply_markup=GENDER_KEYBOARD,
+        )
+
+    def _resume_pending_photo(self, user_id: int):
+        pending = self.store.pending_photo(user_id)
+        if not pending:
+            return
+        update_id = pending['update_id']
+        if self.store.comparison(update_id) or self.store.job_for_update(update_id):
+            self.store.clear_pending_photo(user_id)
+            return
+        if self.store.has_active_job(user_id):
+            return
+        if not self.store.admit_photo(
+            update_id, user_id, self.config.max_active_photos, self.config.daily_photos_per_user
+        ):
+            self.telegram.send_message(
+                pending['chat_id'], 'Лимит фотографий или очередь исчерпаны. Попробуйте позже.'
+            )
+            self.store.clear_pending_photo(user_id)
+            return
+        self.store.clear_pending_photo(user_id)
+        comparison = self.store.add_comparison(
+            update_id,
+            user_id,
+            pending['chat_id'],
+            json.loads(pending['message']),
+            self._models(user_id),
+        )
+        try:
+            self.telegram.send_message(
+                pending['chat_id'],
+                f'Фото принято. Моделей для сравнения: {len(comparison["models"])}. '
+                'Результаты будут приходить по очереди.\n'
+                'Обычно каждая обработка занимает 5–10 минут; при очереди — дольше.',
+            )
+        finally:
+            self._start_comparison(comparison)
 
     def _photo_reference(self, user_id: int, message):
         if message.get('photo'):
@@ -225,7 +352,11 @@ class HromiTelegramBot:
         if self.store.has_active_job(user_id):
             self.telegram.send_message(chat_id, ACTIVE_PHOTO_NOTICE)
             return
-        models = self._models(user_id)
+        gender = self.store.gender(user_id)
+        if gender is None:
+            self._store_pending_photo(update_id, user_id, chat_id, message)
+            return
+        models = self._models(user_id, gender)
         if not models:
             self.telegram.send_message(chat_id, MODELS_UNAVAILABLE)
             return

@@ -28,6 +28,7 @@ class BotStore:
                 CREATE TABLE IF NOT EXISTS settings (
                     user_id INTEGER PRIMARY KEY,
                     model_id TEXT NOT NULL,
+                    gender TEXT,
                     updated_at REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS jobs (
@@ -70,7 +71,19 @@ class BotStore:
                     delivered_message_id INTEGER,
                     PRIMARY KEY(update_id, position)
                 );
+                CREATE TABLE IF NOT EXISTS pending_photos (
+                    user_id INTEGER PRIMARY KEY,
+                    update_id INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    message TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                );
             """)
+            # Databases created before the gender column need an in-place migration;
+            # CREATE TABLE IF NOT EXISTS alone cannot extend an existing schema.
+            columns = {row[1] for row in db.execute('PRAGMA table_info(settings)').fetchall()}
+            if 'gender' not in columns:
+                db.execute('ALTER TABLE settings ADD COLUMN gender TEXT')
 
     def admit_photo(self, update_id, user_id, max_active, daily_limit):
         with self._transaction() as db:
@@ -128,6 +141,53 @@ class BotStore:
                 'SELECT model_id FROM settings WHERE user_id = ?', (user_id,)
             ).fetchone()
             return row['model_id'] if row else None
+
+    def set_gender(self, user_id: int, gender: str | None):
+        with self._transaction() as db:
+            db.execute(
+                """
+                INSERT INTO settings(user_id, model_id, gender, updated_at)
+                VALUES(?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    gender = excluded.gender, updated_at = excluded.updated_at
+            """,
+                (user_id, 'comparison', gender, time.time()),
+            )
+
+    def set_pending_photo(self, user_id: int, update_id: int, chat_id: int, message: str):
+        with self._transaction() as db:
+            db.execute(
+                """
+                INSERT INTO pending_photos(user_id, update_id, chat_id, message, created_at)
+                VALUES(?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    update_id = excluded.update_id,
+                    chat_id = excluded.chat_id,
+                    message = excluded.message,
+                    created_at = excluded.created_at
+            """,
+                (user_id, update_id, chat_id, message, time.time()),
+            )
+
+    def pending_photo(self, user_id: int):
+        with closing(self._connect()) as db:
+            row = db.execute(
+                'SELECT * FROM pending_photos WHERE user_id = ?', (user_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def clear_pending_photo(self, user_id: int):
+        with self._transaction() as db:
+            db.execute('DELETE FROM pending_photos WHERE user_id = ?', (user_id,))
+
+    def pending_photo_users(self):
+        with closing(self._connect()) as db:
+            return [row[0] for row in db.execute('SELECT user_id FROM pending_photos').fetchall()]
+
+    def gender(self, user_id: int):
+        with closing(self._connect()) as db:
+            row = db.execute('SELECT gender FROM settings WHERE user_id = ?', (user_id,)).fetchone()
+            return row['gender'] if row and row['gender'] in ('male', 'female') else None
 
     def set_model(self, user_id: int, model_id: str):
         with self._transaction() as db:
