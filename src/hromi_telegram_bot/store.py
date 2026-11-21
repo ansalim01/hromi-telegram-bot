@@ -31,6 +31,12 @@ class BotStore:
                     gender TEXT,
                     updated_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS rules_acceptance (
+                    user_id INTEGER NOT NULL,
+                    version INTEGER NOT NULL,
+                    accepted_at REAL NOT NULL,
+                    PRIMARY KEY(user_id, version)
+                );
                 CREATE TABLE IF NOT EXISTS jobs (
                     update_id INTEGER PRIMARY KEY,
                     user_id INTEGER NOT NULL,
@@ -88,6 +94,23 @@ class BotStore:
             columns = {row[1] for row in db.execute('PRAGMA table_info(comparisons)').fetchall()}
             if 'gender' not in columns:
                 db.execute('ALTER TABLE comparisons ADD COLUMN gender TEXT')
+
+    def accept_rules(self, user_id: int, version: int):
+        with self._transaction() as db:
+            db.execute(
+                'INSERT OR IGNORE INTO rules_acceptance VALUES (?, ?, ?)',
+                (user_id, version, time.time()),
+            )
+
+    def accepted_rules(self, user_id: int, version: int):
+        with self._transaction() as db:
+            return (
+                db.execute(
+                    'SELECT 1 FROM rules_acceptance WHERE user_id = ? AND version = ?',
+                    (user_id, version),
+                ).fetchone()
+                is not None
+            )
 
     def admit_photo(self, update_id, user_id, max_active, daily_limit):
         with self._transaction() as db:

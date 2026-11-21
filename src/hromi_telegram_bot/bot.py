@@ -26,19 +26,47 @@ GENDER_KEYBOARD = {
         ]
     ]
 }
+RULES_VERSION = 1
+ACCEPT_RULES = f'rules:accept:{RULES_VERSION}'
+RULES_TEXT = (
+    'Правила Hromi\n\n'
+    '• Ботом могут пользоваться только люди от 18 лет.\n'
+    '• Отправляйте фото, на которых все люди совершеннолетние.\n'
+    '• Если на фото другой человек, получите его согласие на обработку.\n\n'
+    'Принимая правила, вы подтверждаете, что вам есть 18 лет и вы будете их соблюдать.'
+)
+MENU_KEYBOARD = {
+    'inline_keyboard': [
+        [{'text': '📷 Отправить фото', 'callback_data': 'menu:photo'}],
+        [
+            {'text': '👤 Кто на фото', 'callback_data': 'menu:gender'},
+            {'text': '📋 Правила', 'callback_data': 'menu:rules'},
+        ],
+    ]
+}
+BACK_ROW = [{'text': '‹ В меню', 'callback_data': 'menu:home'}]
 GENDER_LABELS = {'male': 'мужчина', 'female': 'женщина'}
 MODELS_UNAVAILABLE = (
     'Сравнение SD 1.5, FLUX и Qwen пока недоступно: модели ещё не готовы. Попробуйте позже.'
 )
+AGE_CHECK_MESSAGES = {
+    'BLOCKED_UNDERAGE': 'Не удалось подтвердить, что на фото только взрослые.',
+    'BLOCKED_UNCERTAIN': (
+        'Не удалось подтвердить, что на фото только взрослые. '
+        'Попробуйте чёткий снимок одного взрослого человека с открытым лицом.'
+    ),
+    'BLOCKED_NO_FACE': 'На фото не видно лица. Пришлите чёткий снимок взрослого человека анфас.',
+    'BLOCKED_ERROR': 'Проверка возраста временно недоступна. Попробуйте позже.',
+}
 ALLOWED_TYPES = {'image/jpeg', 'image/png', 'image/webp'}
 STATE_LABELS = {
     'QUEUED': 'В очереди',
     'PREPARING': 'Запускаю и подготавливаю GPU',
-    'SUBMITTING': 'Отправляю фото в ComfyUI',
+    'SUBMITTING': 'Передаю фото на обработку',
     'RUNNING': 'Обрабатываю фотографию',
     'SUCCEEDED': 'Готово',
-    'FAILED': 'Обработка завершилась ошибкой',
-    'UNKNOWN': 'Результат обработки неизвестен',
+    'FAILED': 'Эта модель не смогла обработать фото.',
+    'UNKNOWN': 'Не удалось получить результат от этой модели.',
 }
 
 
@@ -127,6 +155,9 @@ class HromiTelegramBot:
         return error.status is None or error.status == 429 or error.status >= 500
 
     def _allowed(self, user_id: int):
+        managed_access = self.hromi.telegram_access(user_id)
+        if managed_access is not None:
+            return managed_access
         return self.config.allow_any_user or user_id in self.config.allowed_user_ids
 
     def _chat_allowed(self, user_id, chat_id):
@@ -144,28 +175,25 @@ class HromiTelegramBot:
         if not self._chat_allowed(user_id, chat_id):
             return
         if not self._allowed(user_id):
-            self.telegram.send_message(chat_id, 'Доступ к этому боту закрыт.')
-            return
-        text = (message.get('text') or '').strip().split('@', 1)[0]
-        if text in {'/start', '/help'}:
             self.telegram.send_message(
                 chat_id,
-                'Отправьте фотографию, и я обработаю её моделями SD 1.5, FLUX и Qwen '
-                'по очереди. Каждый результат придёт с названием модели. Отправляя фото, '
-                'подтвердите, что имеете право его обрабатывать.\n\n' + PHOTO_GUIDANCE,
+                f'Доступ к этому боту закрыт. Ваш Telegram ID: {user_id}. '
+                'Передайте его администратору, чтобы запросить доступ.',
             )
-            self._show_models(user_id, chat_id)
+            return
+        text = (message.get('text') or '').strip().split('@', 1)[0]
+        if text == '/rules' or not self.store.accepted_rules(user_id, RULES_VERSION):
+            self._show_rules(user_id, chat_id)
+        elif text in {'/start', '/help'}:
+            self._show_menu(chat_id)
         elif text == '/gender':
-            self._ask_gender(chat_id)
+            self._ask_gender(user_id, chat_id)
         elif text == '/model':
             self._show_models(user_id, chat_id)
         elif message.get('photo') or message.get('document'):
             self._handle_photo(int(update['update_id']), user_id, chat_id, message)
         elif text:
-            self.telegram.send_message(
-                chat_id,
-                'Отправьте фото для сравнения SD 1.5, FLUX и Qwen.',
-            )
+            self._show_menu(chat_id)
 
     def _models(self, user_id: int, gender: str | None = None):
         gender = gender or self.store.gender(user_id)
@@ -191,31 +219,73 @@ class HromiTelegramBot:
             models.append(model)
         return models
 
-    def _ask_gender(self, chat_id: int):
+    def _show_rules(self, user_id: int, chat_id: int):
+        accepted = self.store.accepted_rules(user_id, RULES_VERSION)
+        row = (
+            BACK_ROW
+            if accepted
+            else [{'text': 'Мне есть 18, принимаю', 'callback_data': ACCEPT_RULES}]
+        )
+        self.telegram.send_message(chat_id, RULES_TEXT, reply_markup={'inline_keyboard': [row]})
+
+    def _show_menu(self, chat_id: int):
         self.telegram.send_message(
             chat_id,
-            'Кого будем обрабатывать? Выбор применится к следующему фото и запомнится для будущих.',
-            reply_markup=GENDER_KEYBOARD,
+            'Отправьте одно фото. Hromi обработает его тремя моделями '
+            'и пришлёт результаты по очереди для сравнения.',
+            reply_markup=MENU_KEYBOARD,
+        )
+
+    def _show_photo_help(self, user_id: int, chat_id: int):
+        gender = self.store.gender(user_id)
+        selected = (
+            f'Сейчас выбрано: {GENDER_LABELS[gender]}.'
+            if gender
+            else 'Выберите, кто на фото, кнопкой под сообщением.'
+        )
+        self.telegram.send_message(
+            chat_id,
+            'Подготовьте фото одного взрослого человека. Лицо должно быть хорошо видно.\n'
+            + PHOTO_GUIDANCE
+            + '\n\n'
+            + selected
+            + '\n📎 Нажмите на скрепку, выберите снимок и отправьте его в этот чат. '
+            'Подойдут фото и файлы JPEG, PNG или WebP.',
+            reply_markup={'inline_keyboard': [*GENDER_KEYBOARD['inline_keyboard'], BACK_ROW]},
+        )
+
+    def _ask_gender(self, user_id: int, chat_id: int):
+        gender = self.store.gender(user_id)
+        selected = f'Сейчас выбрано: {GENDER_LABELS[gender]}.\n' if gender else ''
+        self.telegram.send_message(
+            chat_id,
+            selected + 'Кто на фото? Выбор сохранится для следующих фотографий.',
+            reply_markup={'inline_keyboard': [*GENDER_KEYBOARD['inline_keyboard'], BACK_ROW]},
         )
 
     def _show_models(self, user_id: int, chat_id: int):
         gender = self.store.gender(user_id)
         models = self._models(user_id, gender)
-        if not models:
-            if gender is None:
-                self._ask_gender(chat_id)
-                return
-            self.telegram.send_message(chat_id, MODELS_UNAVAILABLE)
-            return
-        self.telegram.send_message(
-            chat_id,
-            'Обработаю фото моделями SD 1.5, FLUX и Qwen по очереди '
-            f'(пол: {GENDER_LABELS[gender]}):\n'
-            + '\n'.join(f'• {model["label"]}' for model in models)
-            + '\n\n'
-            + PHOTO_GUIDANCE
-            + '\n\nОтправьте фотографию для сравнения.',
-        )
+        if gender is None:
+            text = (
+                'Я обработаю одно фото тремя моделями: SD 1.5, FLUX и Qwen. '
+                'Результаты придут отдельно, чтобы их было удобно сравнить.\n\n'
+                'Сначала выберите, кто будет на фото.'
+            )
+        elif not models:
+            text = f'Сейчас выбрано: {GENDER_LABELS[gender]}.\n\n' + MODELS_UNAVAILABLE
+        else:
+            text = (
+                f'Сейчас выбрано: {GENDER_LABELS[gender]}.\n'
+                'Чтобы изменить выбор, нажмите кнопку под сообщением.\n\n'
+                'Отправьте фотографию, на обработку которой у вас есть разрешение. '
+                'Я обработаю её по очереди и пришлю каждый результат отдельно:\n'
+                + '\n'.join(f'• {model["label"]}' for model in models)
+                + '\n\n'
+                + PHOTO_GUIDANCE
+                + '\nМожно отправить фото или файл JPEG, PNG или WebP.'
+            )
+        self.telegram.send_message(chat_id, text, reply_markup=GENDER_KEYBOARD)
 
     def _handle_callback(self, callback):
         user_id = int(callback['from']['id'])
@@ -229,6 +299,25 @@ class HromiTelegramBot:
             self.telegram.answer_callback(callback_id, 'Доступ закрыт')
             return
         data = callback.get('data') or ''
+        if data == ACCEPT_RULES:
+            self.store.accept_rules(user_id, RULES_VERSION)
+            self.telegram.answer_callback(callback_id, 'Правила приняты')
+            self._show_menu(chat_id)
+            return
+        if not self.store.accepted_rules(user_id, RULES_VERSION):
+            self.telegram.answer_callback(callback_id, 'Сначала примите правила')
+            self._show_rules(user_id, chat_id)
+            return
+        menu_actions = {
+            'menu:home': lambda: self._show_menu(chat_id),
+            'menu:photo': lambda: self._show_photo_help(user_id, chat_id),
+            'menu:gender': lambda: self._ask_gender(user_id, chat_id),
+            'menu:rules': lambda: self._show_rules(user_id, chat_id),
+        }
+        if data in menu_actions:
+            self.telegram.answer_callback(callback_id)
+            menu_actions[data]()
+            return
         if data.startswith('gender:'):
             gender = data[7:]
             if gender not in GENDER_LABELS:
@@ -305,6 +394,8 @@ class HromiTelegramBot:
         )
 
     def _resume_pending_photo(self, user_id: int):
+        if not self.store.accepted_rules(user_id, RULES_VERSION):
+            return
         pending = self.store.claim_pending_photo(user_id)
         if not pending:
             return
@@ -484,11 +575,12 @@ class HromiTelegramBot:
             self.telegram.send_message(
                 comparison['chat_id'],
                 f'Сравнение завершено. Результатов: {delivered} из {len(models)}. '
-                'Можно отправить следующее фото.',
+                'Можно отправить следующее фото или изменить выбор под этим сообщением.',
+                reply_markup=GENDER_KEYBOARD,
             )
             return True
         model = models[index]
-        label = f'{index + 1}/{len(models)} · {model["label"]} · {model["id"]}'
+        label = f'{index + 1}/{len(models)} · {model["label"]}'
         job_id = comparison['current_job_id']
         if job_id is None:
             payload = comparison['payload']
@@ -513,9 +605,12 @@ class HromiTelegramBot:
             except ApiError as error:
                 if self._should_retry_update(error):
                     raise
+                message = AGE_CHECK_MESSAGES.get(error.code)
+                if error.code == 'telegram_access_denied':
+                    message = 'У вас больше нет доступа к обработке фото в этом боте.'
                 self.telegram.send_message(
                     comparison['chat_id'],
-                    label + ': не удалось поставить в очередь. ' + 'Код: ' + error.code,
+                    message or label + ': не удалось поставить в очередь. Код: ' + error.code,
                 )
                 if error.status in {401, 403}:
                     self.store.finish_comparison(update_id)
@@ -561,9 +656,15 @@ class HromiTelegramBot:
         self.executor.submit(self._monitor, job)
 
     def _status_text(self, current):
+        age_message = AGE_CHECK_MESSAGES.get(current.get('error'))
+        if age_message and current['state'] == 'FAILED':
+            return age_message
         text = STATE_LABELS.get(current['state'], current['state'])
         position = current.get('queue_position')
-        text += f'. Позиция: {position}.' if position else '.'
+        if current['state'] == 'QUEUED' and position:
+            text += f'. Место в очереди: {position}'
+        if not text.endswith('.'):
+            text += '.'
         if current['state'] in STATE_LABELS and current['state'] not in {
             'SUCCEEDED',
             'FAILED',
@@ -656,15 +757,13 @@ class HromiTelegramBot:
                 if state in {'FAILED', 'UNKNOWN'}:
                     self._update_progress(job, current)
                     self.store.update_job(job_id, state, state)
-                    self.telegram.send_message(
-                        job['chat_id'],
-                        (
-                            job.get('model_label', '')
-                            + '\n'
-                            + 'Не удалось обработать фотографию. Код: '
-                            + state
-                        ).strip(),
-                    )
+                    if not job.get('progress_message_id'):
+                        self.telegram.send_message(
+                            job['chat_id'],
+                            '\n'.join(
+                                filter(None, (job.get('model_label'), self._status_text(current)))
+                            ),
+                        )
                     return state
                 self._update_progress(job, current)
                 self._closed.wait(self.config.poll_interval_seconds)

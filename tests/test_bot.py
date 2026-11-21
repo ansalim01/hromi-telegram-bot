@@ -101,6 +101,9 @@ class FakeHromi:
         self.genders = []
         self.states = []
 
+    def telegram_access(self, user_id):
+        return None
+
     def models(self, user_id):
         return MODELS + MALE_MODELS
 
@@ -151,10 +154,41 @@ class BotTests(TestCase):
             self.hromi,
             self.store,
         )
+        self.store.accept_rules(7, 1)
         self.store.set_gender(7, 'female')
         self.addCleanup(self.bot.close)
 
-    def test_start_shows_backend_models(self):
+    def test_admin_access_overrides_existing_bot_policy(self):
+        update = self.photo_update()
+        with patch.object(self.hromi, 'telegram_access', return_value=False):
+            self.bot.handle_update(update)
+        self.assertIn('Ваш Telegram ID: 7', self.telegram.messages[-1]['text'])
+        self.assertIsNone(self.store.comparison(update['update_id']))
+
+    def test_new_user_must_accept_rules_before_photo_upload(self):
+        update = self.photo_update()
+        update['message']['from']['id'] = 9
+        self.bot.handle_update(update)
+        rules = self.telegram.messages[-1]
+        self.assertIn('только люди от 18 лет', rules['text'])
+        self.assertIsNone(self.store.comparison(update['update_id']))
+        self.assertNotIn(9, self.store.pending_photo_users())
+
+        accept = rules['reply_markup']['inline_keyboard'][0][0]['callback_data']
+        self.bot.handle_update(
+            {
+                'callback_query': {
+                    'id': 'accept',
+                    'from': {'id': 9},
+                    'message': {'chat': {'id': 8}},
+                    'data': accept,
+                }
+            }
+        )
+        self.assertTrue(BotStore(self.store.path).accepted_rules(9, 1))
+        self.assertIn('📷 Отправить фото', str(self.telegram.messages[-1]['reply_markup']))
+
+    def test_model_command_shows_backend_models(self):
         self.bot.handle_update(
             {
                 'update_id': 1,
@@ -162,7 +196,7 @@ class BotTests(TestCase):
                     'message_id': 1,
                     'from': {'id': 7},
                     'chat': {'id': 8},
-                    'text': '/start',
+                    'text': '/model',
                 },
             }
         )
@@ -172,7 +206,13 @@ class BotTests(TestCase):
         self.assertIn('Qwen-Image 2.1', text)
         self.assertIn('в полный рост', text)
         self.assertIn('одежда в один слой', text)
-        self.assertIsNone(self.telegram.messages[-1]['reply_markup'])
+        self.assertEqual(
+            ['gender:male', 'gender:female'],
+            [
+                button['callback_data']
+                for button in self.telegram.messages[-1]['reply_markup']['inline_keyboard'][0]
+            ],
+        )
 
     def test_comparison_excludes_diagnostics_and_preserves_model_order(self):
         with patch.object(
@@ -381,7 +421,7 @@ class BotTests(TestCase):
                 },
             }
         )
-        self.assertEqual(self.telegram.messages[-1]['text'], 'Доступ к этому боту закрыт.')
+        self.assertIn('Доступ к этому боту закрыт.', self.telegram.messages[-1]['text'])
 
     def test_permanent_telegram_error_does_not_block_later_updates(self):
         stale_callback = ApiError(

@@ -26,6 +26,11 @@ SAFE_ERROR_CODES = {
     'public_api_disabled',
     'invalid_principal',
     'principal_scope_denied',
+    'telegram_access_denied',
+    'BLOCKED_UNDERAGE',
+    'BLOCKED_UNCERTAIN',
+    'BLOCKED_NO_FACE',
+    'BLOCKED_ERROR',
     'invalid_idempotency_key',
     'invalid_photo_job',
     'job_not_found',
@@ -165,6 +170,25 @@ class HromiClient:
             'Authorization': 'Bearer ' + self.api_key,
             'X-Hromi-Principal': f'telegram:{user_id}',
         }
+
+    def telegram_access(self, user_id: int) -> bool | None:
+        try:
+            data = _json_request(
+                'GET',
+                self.base_url + '/api/v1/telegram/access',
+                headers=self._headers(user_id),
+                timeout=5,
+            )
+        except ApiError as error:
+            if error.status == 404:
+                return None  # Older backend still uses the bot's local policy.
+            raise
+        if data.get('managed') is False:
+            return None
+        allowed = data.get('allowed')
+        if data.get('managed') is not True or type(allowed) is not bool:
+            raise ApiError('hromi', 502, 'invalid_telegram_access_response')
+        return allowed
 
     def models(self, user_id: int):
         data = _json_request(
