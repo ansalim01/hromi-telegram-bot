@@ -203,22 +203,25 @@ class BotStore:
             ).fetchone()
             return dict(row) if row else None
 
-    def claim_pending_photo(self, user_id: int):
-        """Atomically take the pending photo so concurrent resumes cannot double-submit."""
-        db = self._connect()
-        try:
-            db.execute('BEGIN IMMEDIATE')
-            row = db.execute(
-                'SELECT * FROM pending_photos WHERE user_id = ?', (user_id,)
-            ).fetchone()
-            if row is None:
-                db.execute('COMMIT')
+    def queue_pending_photo(self, user_id, update_id, models, gender, max_active):
+        with self._transaction() as db:
+            inserted = db.execute(
+                """INSERT INTO comparisons(update_id, user_id, chat_id, payload, models, gender)
+                   SELECT update_id, user_id, chat_id, message, ?, ? FROM pending_photos
+                   WHERE user_id = ? AND update_id = ?
+                     AND (SELECT COUNT(*) FROM comparisons WHERE finished = 0) < ?
+                     AND (SELECT COALESCE(SUM(length(payload)), 0) FROM comparisons
+                          WHERE finished = 0) + length(message) <= ?
+                   ON CONFLICT(update_id) DO NOTHING""",
+                (json.dumps(models), gender, user_id, update_id, max_active, 128 * 1024 * 1024),
+            ).rowcount
+            if not inserted:
                 return None
-            db.execute('DELETE FROM pending_photos WHERE user_id = ?', (user_id,))
-            db.execute('COMMIT')
-            return dict(row)
-        finally:
-            db.close()
+            db.execute(
+                'DELETE FROM pending_photos WHERE user_id = ? AND update_id = ?',
+                (user_id, update_id),
+            )
+        return self.comparison(update_id)
 
     def clear_pending_photo(self, user_id: int):
         with self._transaction() as db:

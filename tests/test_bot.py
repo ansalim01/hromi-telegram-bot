@@ -206,13 +206,8 @@ class BotTests(TestCase):
         self.assertIn('Qwen-Image 2.1', text)
         self.assertIn('в полный рост', text)
         self.assertIn('одежда в один слой', text)
-        self.assertEqual(
-            ['gender:male', 'gender:female'],
-            [
-                button['callback_data']
-                for button in self.telegram.messages[-1]['reply_markup']['inline_keyboard'][0]
-            ],
-        )
+        self.assertIn('После отправки фото', text)
+        self.assertNotIn('gender:', str(self.telegram.messages[-1]['reply_markup']))
 
     def test_comparison_excludes_diagnostics_and_preserves_model_order(self):
         with patch.object(
@@ -247,9 +242,8 @@ class BotTests(TestCase):
                     ],
                 ),
             ):
-                with patch.object(self.telegram, 'get_file') as get_file:
-                    self.bot.handle_update(self.photo_update())
-                    get_file.assert_not_called()
+                self.submit_photo(self.photo_update())
+                self.assertIsNotNone(self.store.pending_photo(7))
                 self.assertEqual(self.bot._models(7), [])
                 self.assertEqual(self.hromi.created, [])
                 self.assertIsNone(self.store.comparison(42))
@@ -283,9 +277,26 @@ class BotTests(TestCase):
             },
         }
 
+    def choose_photo_gender(self, photo, gender='female', bot=None):
+        (bot or self.bot).handle_update(
+            {
+                'update_id': photo['update_id'] + 1000,
+                'callback_query': {
+                    'id': 'photo-gender-choice',
+                    'from': photo['message']['from'],
+                    'message': {'chat': photo['message']['chat']},
+                    'data': f'photo-gender:{photo["update_id"]}:{gender}',
+                },
+            }
+        )
+
+    def submit_photo(self, photo, gender='female'):
+        self.bot.handle_update(photo)
+        self.choose_photo_gender(photo, gender)
+
     def test_photo_runs_all_models_sequentially_with_labels(self):
         self.bot._start_comparison = lambda comparison: None
-        self.bot.handle_update(self.photo_update())
+        self.submit_photo(self.photo_update())
         self.assertTrue(self.store.has_active_job(7))
         self.bot._compare(42)
         self.assertEqual(
@@ -307,8 +318,8 @@ class BotTests(TestCase):
         second['message']['from']['id'] = 9
 
         with patch.object(self.bot.executor, 'submit') as submit:
-            self.bot.handle_update(first)
-            self.bot.handle_update(second)
+            self.submit_photo(first)
+            self.submit_photo(second)
             submit.assert_called_once_with(self.bot._compare, 42)
 
         reopened = HromiTelegramBot(
@@ -330,14 +341,14 @@ class BotTests(TestCase):
 
     def test_telegram_username_is_sent_with_every_model(self):
         self.bot._start_comparison = lambda comparison: None
-        self.bot.handle_update(self.photo_update(username='ansalim_01'))
+        self.submit_photo(self.photo_update(username='ansalim_01'))
         self.bot._compare(42)
         self.assertEqual(len(self.hromi.created), 3)
         self.assertEqual(self.hromi.usernames, ['ansalim_01'] * 3)
 
     def test_photo_without_telegram_username_omits_it(self):
         self.bot._start_comparison = lambda comparison: None
-        self.bot.handle_update(self.photo_update())
+        self.submit_photo(self.photo_update())
         self.bot._compare(42)
         self.assertEqual(len(self.hromi.created), 3)
         self.assertEqual(self.hromi.usernames, [None] * 3)
@@ -345,7 +356,7 @@ class BotTests(TestCase):
     def test_failed_model_does_not_stop_other_models(self):
         self.bot._start_comparison = lambda comparison: None
         self.hromi.states = [{'state': 'FAILED', 'error': 'https://private.example/fixture-secret'}]
-        self.bot.handle_update(self.photo_update())
+        self.submit_photo(self.photo_update())
         self.bot._compare(42)
         self.assertEqual(len(self.hromi.created), 3)
         self.assertEqual(len(self.telegram.photos), 2)
@@ -358,7 +369,7 @@ class BotTests(TestCase):
 
     def test_restores_current_model_without_submitting_again(self):
         self.bot._start_comparison = lambda comparison: None
-        self.bot.handle_update(self.photo_update())
+        self.submit_photo(self.photo_update())
         self.store.set_comparison_job(42, 'existing-job')
         self.bot.store = BotStore(self.config.database_path)
         self.assertEqual(len(self.bot.store.active_comparisons()), 1)
@@ -371,7 +382,7 @@ class BotTests(TestCase):
 
     def test_second_photo_blocked_for_entire_comparison(self):
         self.bot._start_comparison = lambda comparison: None
-        self.bot.handle_update(self.photo_update())
+        self.submit_photo(self.photo_update())
         self.store.advance_comparison(42)
         self.bot.handle_update(self.photo_update(43))
         self.assertIsNone(self.store.comparison(43))
@@ -388,8 +399,8 @@ class BotTests(TestCase):
                 'photo': [{'file_id': 'photo', 'file_size': 100}],
             },
         }
-        self.bot.handle_update(update)
-        self.bot.handle_update(update)
+        self.submit_photo(update)
+        self.submit_photo(update)
         self.assertEqual(len(self.store.active_comparisons()), 1)
 
     def test_store_recovers_active_jobs_and_offset(self):
@@ -418,7 +429,7 @@ class BotTests(TestCase):
         self.assertTrue(reopened.has_active_job(7))
         self.assertFalse(reopened.has_active_job(99))
         self.store.update_job('b' * 32, 'DELIVERED')
-        self.bot.handle_update(update)
+        self.submit_photo(update)
         self.assertIsNotNone(self.store.comparison(42))
         self.assertIn('5–10 минут', self.telegram.messages[-1]['text'])
 
@@ -472,7 +483,7 @@ class BotTests(TestCase):
 
     def test_temporary_telegram_failure_retries_without_restart(self):
         self.bot._start_comparison = lambda comparison: None
-        self.bot.handle_update(self.photo_update())
+        self.submit_photo(self.photo_update())
         original = self.telegram.send_message
         failed = False
 
@@ -492,7 +503,7 @@ class BotTests(TestCase):
 
     def test_missing_job_does_not_block_remaining_models(self):
         self.bot._start_comparison = lambda comparison: None
-        self.bot.handle_update(self.photo_update())
+        self.submit_photo(self.photo_update())
         original = self.hromi.job
         failed = False
 
@@ -510,7 +521,7 @@ class BotTests(TestCase):
 
     def test_blocked_telegram_chat_finishes_comparison(self):
         self.bot._start_comparison = lambda comparison: None
-        self.bot.handle_update(self.photo_update())
+        self.submit_photo(self.photo_update())
         self.telegram.send_photo = lambda *args: (_ for _ in ()).throw(
             ApiError('telegram', 403, 'bot_was_blocked')
         )
@@ -519,7 +530,7 @@ class BotTests(TestCase):
 
     def test_restart_after_delivery_does_not_resend_delivered_step(self):
         self.bot._start_comparison = lambda comparison: None
-        self.bot.handle_update(self.photo_update())
+        self.submit_photo(self.photo_update())
         with patch.object(self.store, 'advance_comparison', side_effect=RuntimeError('crash')):
             self.bot._compare(42)
         self.assertEqual(len(self.telegram.photos), 1)
@@ -528,30 +539,19 @@ class BotTests(TestCase):
         self.assertEqual(len(self.telegram.photos), 3)
         self.assertFalse(self.bot.store.has_active_job(7))
 
-    def test_photo_without_gender_is_held_until_choice(self):
-        self.store.set_gender(7, None)
-        self.bot.store = BotStore(self.config.database_path)
+    def test_each_photo_waits_for_its_own_gender_even_with_saved_choice(self):
         self.bot._start_comparison = lambda comparison: None
-        self.bot.handle_update(self.photo_update())
+        old = self.photo_update(42)
+        photo = self.photo_update(43)
+        self.bot.handle_update(old)
+        self.bot.handle_update(photo)
         self.assertEqual(self.hromi.created, [])
         self.assertIn('Выберите, кого обрабатываем', self.telegram.messages[-1]['text'])
-        self.assertIsNotNone(self.bot.store.pending_photo(7))
-        self.bot.handle_update(
-            {
-                'update_id': 43,
-                'callback_query': {
-                    'id': 'callback-2',
-                    'from': {'id': 7},
-                    'message': {'chat': {'id': 8}},
-                    'data': 'gender:male',
-                },
-            }
-        )
-        self.bot._compare(42)
-        self.assertEqual(
-            [job[-1] for job in self.hromi.created],
-            COMPARISON_KEYS,
-        )
+        self.choose_photo_gender(old, 'female')
+        self.assertIsNone(self.store.comparison(43))
+        self.choose_photo_gender(photo, 'male')
+        self.bot._compare(43)
+        self.assertEqual(self.hromi.genders, ['male'] * len(COMPARISON_KEYS))
         self.assertIsNone(self.bot.store.pending_photo(7))
 
     def test_gender_choice_changes_model_set(self):
@@ -578,7 +578,7 @@ class BotTests(TestCase):
     def test_each_comparison_job_carries_the_subject_gender(self):
         self.bot._start_comparison = lambda comparison: None
         self.store.set_gender(7, 'male')
-        self.bot.handle_update(self.photo_update())
+        self.submit_photo(self.photo_update(), 'male')
         self.bot._compare(42)
         self.assertEqual(self.hromi.genders, ['male'] * len(COMPARISON_KEYS))
         self.assertEqual(self.store.comparison(42)['gender'], 'male')
@@ -587,7 +587,7 @@ class BotTests(TestCase):
         # Comparisons created before the comparison row stored a gender.
         self.bot._start_comparison = lambda comparison: None
         self.store.set_gender(7, 'female')
-        self.bot.handle_update(self.photo_update())
+        self.submit_photo(self.photo_update())
         with self.store._transaction() as db:
             db.execute('UPDATE comparisons SET gender = NULL WHERE update_id = 42')
         self.bot._compare(42)
@@ -606,7 +606,9 @@ class BotTests(TestCase):
         self.addCleanup(reopened.close)
         reopened._start_comparison = lambda comparison: None
         reopened.store.set_gender(7, 'female')
-        reopened._resume_pending_photo(7)
+        reopened._restore_monitors()
+        self.assertIsNone(reopened.store.comparison(42))
+        self.choose_photo_gender(self.photo_update(), bot=reopened)
         reopened._compare(42)
         self.assertEqual(
             [job[-1] for job in self.hromi.created],
