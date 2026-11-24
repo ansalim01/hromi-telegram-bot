@@ -362,6 +362,13 @@ class BotStore:
             ]
         return [self.comparison(update_id) for update_id in ids]
 
+    def next_comparison_id(self):
+        with closing(self._connect()) as db:
+            row = db.execute(
+                'SELECT update_id FROM comparisons WHERE finished = 0 ORDER BY update_id LIMIT 1'
+            ).fetchone()
+        return row[0] if row else None
+
     def set_comparison_job(self, update_id, job_id):
         with self._transaction() as db:
             db.execute(

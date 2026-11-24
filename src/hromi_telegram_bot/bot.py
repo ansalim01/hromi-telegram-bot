@@ -105,8 +105,7 @@ class HromiTelegramBot:
     def _restore_monitors(self):
         for job in self.store.active_jobs():
             self._start_monitor(job)
-        for comparison in self.store.active_comparisons():
-            self._start_comparison(comparison)
+        self._start_next_comparison()
         for user_id in self.store.pending_photo_users():
             if self.store.gender(user_id) and not self.store.has_active_job(user_id):
                 self._resume_pending_photo(user_id)
@@ -518,14 +517,26 @@ class HromiTelegramBot:
             self._start_comparison(comparison)
 
     def _start_comparison(self, comparison):
-        key = ('comparison', comparison['update_id'])
+        if not comparison['finished']:
+            self._start_next_comparison()
+
+    def _start_next_comparison(self):
         with self._monitor_lock:
-            if comparison['finished'] or key in self._monitoring:
+            if self._closed.is_set() or any(isinstance(key, tuple) for key in self._monitoring):
                 return
             if len(self._monitoring) >= self.config.monitor_workers:
                 return  # Durable work is picked up by the next polling iteration.
+            update_id = self.store.next_comparison_id()
+            if update_id is None:
+                return
+            key = ('comparison', update_id)
             self._monitoring.add(key)
-        self.executor.submit(self._compare, comparison['update_id'])
+            try:
+                self.executor.submit(self._compare, update_id)
+            except RuntimeError:
+                self._monitoring.discard(key)
+                if not self._closed.is_set():
+                    raise
 
     def _compare(self, update_id):
         key = ('comparison', update_id)
@@ -560,6 +571,8 @@ class HromiTelegramBot:
         finally:
             with self._monitor_lock:
                 self._monitoring.discard(key)
+            if not self._closed.is_set() and self.store.comparison(update_id)['finished']:
+                self._start_next_comparison()
 
     def _comparison_step(self, update_id):
         comparison = self.store.comparison(update_id)

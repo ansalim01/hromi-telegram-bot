@@ -100,9 +100,10 @@ class BotSecurityTests(TestCase):
             bot = HromiTelegramBot(config, Mock(), Mock())
             self.addCleanup(bot.close)
             bot.executor.submit = Mock()
-            bot._start_comparison({'update_id': 1, 'finished': False})
-            bot._start_comparison({'update_id': 2, 'finished': False})
-            bot.executor.submit.assert_called_once()
+            for update_id in (1, 2):
+                comparison = bot.store.add_comparison(update_id, update_id, update_id, {}, [])
+                bot._start_comparison(comparison)
+            bot.executor.submit.assert_called_once_with(bot._compare, 1)
 
 
 class Response:

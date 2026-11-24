@@ -299,6 +299,35 @@ class BotTests(TestCase):
         self.assertFalse(self.store.has_active_job(7))
         self.assertIsNone(self.store.comparison(42)['payload'])
 
+    def test_orders_resume_and_finish_in_fifo_order_across_users(self):
+        self.store.accept_rules(9, 1)
+        self.store.set_gender(9, 'female')
+        first = self.photo_update(42)
+        second = self.photo_update(43)
+        second['message']['from']['id'] = 9
+
+        with patch.object(self.bot.executor, 'submit') as submit:
+            self.bot.handle_update(first)
+            self.bot.handle_update(second)
+            submit.assert_called_once_with(self.bot._compare, 42)
+
+        reopened = HromiTelegramBot(
+            self.config, self.telegram, self.hromi, BotStore(self.config.database_path)
+        )
+        self.addCleanup(reopened.close)
+        with patch.object(reopened.executor, 'submit') as submit:
+            reopened._restore_monitors()
+            submit.assert_called_once_with(reopened._compare, 42)
+            reopened._compare(42)
+            self.assertEqual(
+                [(j[0], j[-1]) for j in self.hromi.created], [(7, m) for m in COMPARISON_KEYS]
+            )
+            self.assertFalse(self.store.comparison(43)['finished'])
+            self.assertEqual(submit.call_args.args, (reopened._compare, 43))
+            reopened._compare(43)
+
+        self.assertEqual([j[0] for j in self.hromi.created], [7, 7, 7, 9, 9, 9])
+
     def test_telegram_username_is_sent_with_every_model(self):
         self.bot._start_comparison = lambda comparison: None
         self.bot.handle_update(self.photo_update(username='ansalim_01'))
